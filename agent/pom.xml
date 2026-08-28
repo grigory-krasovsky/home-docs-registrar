@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.example</groupId>
+        <artifactId>home-docs-registrar</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>home-docs-agent</artifactId>
+    <name>home-docs-agent</name>
+    <description>Home Windows side: pulls queued files from the VPS and writes them to the Time Capsule over SMB3</description>
+
+    <!-- Deliberately NOT a Spring app (minimal footprint). Inherits the parent only for
+         dependency/plugin version alignment. HTTP client is the built-in java.net.http. -->
+
+    <properties>
+        <jcifs-ng.version>2.1.10</jcifs-ng.version>
+        <maven-shade-plugin.version>3.5.1</maven-shade-plugin.version>
+    </properties>
+
+    <dependencies>
+        <!-- SMB3 client (pure Java over TCP; no OS SMB stack, works from Windows to the SMB3 capsule) -->
+        <dependency>
+            <groupId>eu.agno3.jcifs</groupId>
+            <artifactId>jcifs-ng</artifactId>
+            <version>${jcifs-ng.version}</version>
+        </dependency>
+        <!-- JSON for the agent<->VPS API (version managed by the Spring Boot parent) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>home-docs-agent</finalName>
+        <plugins>
+            <!-- Runnable fat JAR: java -jar target/home-docs-agent.jar -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>${maven-shade-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <!-- Replace (not merge) the shade transformers inherited from the Spring Boot
+                                 parent's pluginManagement. combine.self="override" swaps the whole node;
+                                 combine.children merges element-wise and leaks the parent's <resource> onto
+                                 our ManifestResourceTransformer (which has no such field -> parse error). -->
+                            <transformers combine.self="override">
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.example.homedocsagent.HomeDocsAgent</mainClass>
+                                </transformer>
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <!-- not a library; the fat JAR is the deliverable, so skip the reduced POM -->
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
