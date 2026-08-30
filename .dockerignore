@@ -1,0 +1,8 @@
+# Keep the build context lean; the image only needs the poms + module sources.
+**/target/
+.git/
+.github/
+.idea/
+*.iml
+docs/
+*.md

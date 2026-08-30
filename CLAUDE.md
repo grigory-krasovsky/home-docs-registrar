@@ -66,6 +66,17 @@ compilation via `package`/`compile` is the only static check.
 defaults to a JDK 17, which fails with "release version 21 not supported"). IntelliJ builds are
 unaffected (they use the IDE's configured SDK).
 
+## Deployment (Docker + CI/CD)
+
+The VPS side runs in Docker via `docker-compose.yml` (the `server` image + a `postgres:17` service
+with a `pgdata` volume). The root `Dockerfile` is a multi-stage build of the `server` module.
+`.github/workflows/deploy.yml` runs on push to `master`: build + test (JDK 21), build the image and
+push it to **GHCR** (`ghcr.io/<owner>/home-docs-server`), then SSH to the VPS and
+`docker compose pull && up -d`. Deploy steps are skipped until the `VPS_HOST` secret is set (the image
+is still built/pushed, so the workflow stays green). Secrets live in a `.env` on the VPS and in GitHub
+secrets (`VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`) — never in git or the image (see `docs/SETUP.md`). The
+home `agent` is **not** part of this deploy — it stays a JAR on the Windows PC.
+
 ## Conventions
 
 - Packages: server code under `com.example.homedocsregistrar`, agent code under

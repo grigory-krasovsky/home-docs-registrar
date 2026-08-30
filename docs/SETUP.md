@@ -1,38 +1,50 @@
 # One-time setup (manual steps)
 
 These are the manual, out-of-band steps the software itself cannot perform. Fill in the concrete
-values (paths, DB URL, tokens, ids) as they are decided. Detailed instructions are written in
-**Step 6** of `docs/PLAN.md`; the sections below are placeholders so nothing is forgotten.
+values (paths, ids, tokens) as they are decided. Detailed instructions are written in **Step 6** of
+`docs/PLAN.md`; the sections below are placeholders so nothing is forgotten.
 
 ## 1. Telegram bot
 
-- Create the bot via @BotFather; keep the **bot token** in an env var (never commit it).
-- Note the Bot API limits: download ≤ ~20 MB, send ≤ ~50 MB — normalize scans to a compact PDF at ingest.
-- _TODO: record the bot username; store the token as an env var._
+- Create the bot via @BotFather; keep the **bot token** in the VPS `.env` (never commit it).
+- Bot API limits: download ≤ ~20 MB, send ≤ ~50 MB — normalize scans to a compact PDF at ingest.
+- _TODO: record the bot username._
 
 ## 2. Telegram — private archive channel (primary store)
 
-- Create a **private channel** from your own account (bots cannot create channels — so you are the owner).
-- **Add the bot as an admin** with "Post Messages" permission (member-only is not enough for a bot to post).
-- It can contain just you (owner) + the bot. You keep a browsable view of all archived documents.
-- Capture the channel's numeric **chat_id** (looks like `-100…`) for the server config (`ARCHIVE_CHANNEL_ID`):
-  after adding the bot as admin, post any message in the channel and the bot receives it as a channel post with the id.
+- Create a **private channel** from your own account (bots cannot create channels — you are the owner).
+- **Add the bot as an admin** with "Post Messages" permission (member-only is not enough).
+- Capture the channel's numeric **chat_id** (`-100…`) for `ARCHIVE_CHANNEL_ID`: after adding the bot as admin,
+  post any message in the channel and the bot receives it as a channel post with the id.
 - _TODO: record `ARCHIVE_CHANNEL_ID`._
 
-## 3. VPS — PostgreSQL
+## 3. VPS — Docker host & the deployed stack
 
-- Provision a PostgreSQL database + user for the server (stores metadata + `file_id`/`channel_message_id`, not the files).
-- _TODO: record datasource URL/user; keep the password in an env var._
+- Install **Docker Engine + Compose plugin**.
+- The stack is `docker-compose.yml` (services: `server` + `postgres:17`, data in the `pgdata` volume).
+  CI copies the compose file to `~/home-docs-registrar/`. Postgres runs as a container — no manual DB provisioning.
+- Create `~/home-docs-registrar/.env` (never commit), at minimum:
+  ```
+  POSTGRES_PASSWORD=<choose a strong password>
+  # filled in from step 3/4 onwards:
+  TELEGRAM_BOT_TOKEN=
+  ARCHIVE_CHANNEL_ID=
+  AGENT_TOKEN=
+  ```
+- _TODO: create `.env`; confirm `docker compose up -d` brings up postgres + server._
 
-## 4. VPS — Tesseract OCR
+## 4. GitHub Actions — deploy access
 
-- Install native **Tesseract** and the **`rus`** language data (`rus.traineddata`).
-- _TODO: record the `tessdata` path for `application.yaml`._
+- Add repository **secrets**: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (a private key whose public half is in the VPS user's `authorized_keys`).
+- The SSH user must be able to run Docker (in the `docker` group).
+- On push to `master`: build + test → image pushed to **GHCR** (`ghcr.io/<owner>/home-docs-server`) → SSH deploy.
+  Until `VPS_HOST` is set, the deploy steps are **skipped** (the image is still built and pushed, workflow stays green).
+- _TODO: add the three secrets; run the workflow once and confirm the deploy._
 
-## 5. VPS — server configuration & secrets
+## 5. VPS — Tesseract OCR
 
-- Provide via environment variables (never commit): Telegram bot token, `ARCHIVE_CHANNEL_ID`, DB password, agent API bearer token.
-- _TODO: document the exact env var names once `application.yaml` is written (Step 3–4)._
+- Installed **inside the Docker image** (runtime stage of `Dockerfile`) when Tess4J lands in step 3 — no host install.
+- _TODO: (step 3) add Tesseract + `rus.traineddata` to the Dockerfile._
 
 ## 6. Home PC (Windows) — backup folder + agent autostart
 

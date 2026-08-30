@@ -1,0 +1,38 @@
+# Runs on the VPS. Secrets come from a .env file next to this file (never commit .env).
+# Deploy sets SERVER_IMAGE to the freshly pushed GHCR tag; otherwise :latest is used.
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-home_docs}
+      POSTGRES_USER: ${POSTGRES_USER:-home_docs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-home_docs} -d ${POSTGRES_DB:-home_docs}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  server:
+    image: ${SERVER_IMAGE:-ghcr.io/grigory-krasovsky/home-docs-server:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-home_docs}
+      DB_USER: ${POSTGRES_USER:-home_docs}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Used from step 3/4 onwards; leave blank in .env until then.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      ARCHIVE_CHANNEL_ID: ${ARCHIVE_CHANNEL_ID:-}
+      AGENT_TOKEN: ${AGENT_TOKEN:-}
+    ports:
+      # Bound to localhost for now. When the agent API lands (step 4), put a TLS reverse proxy in front.
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  pgdata:
