@@ -72,4 +72,3 @@ jobs:
             export SERVER_IMAGE=${{ env.IMAGE }}:${{ github.sha }}
             docker compose pull
             docker compose up -d
-            docker image prune -f
