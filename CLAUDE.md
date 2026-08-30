@@ -11,22 +11,23 @@ architecture, the key decisions, and the step-by-step roadmap). Read it before m
 ## Project state
 
 `home-docs-registrar` is a personal registry for home paper documents (contracts, warranties,
-receipts). A Telegram bot receives a photographed document, OCRs it, stores the text + fields in a
-database, and files the digitized copy in a folder on the home Windows PC; the DB also records the
-physical location (a card catalog whose sections carry QR codes).
+receipts). A Telegram bot receives a photographed document, OCRs it, and stores the text + fields +
+the file's Telegram `file_id` in a database; it also records the physical location (a card catalog
+whose sections carry QR codes). The digitized file itself stays on **Telegram** (primary store,
+retrieved by `file_id`) and is backed up to the home PC when it is online.
 
 It is a **two-module monorepo** (see `docs/PLAN.md` for the full picture):
 
-- **`server/`** — runs on the VPS: Telegram bot, OCR, PostgreSQL registry, an on-disk store-and-forward
-  queue, an HTTPS API for the agent, and a disk-space monitor.
+- **`server/`** — runs on the VPS: Telegram bot, OCR, PostgreSQL registry (metadata + `file_id`),
+  file retrieval by `file_id`, and a backup-orchestration API for the agent. It holds **no file
+  archive** (VPS disk is limited); it downloads a file from Telegram only transiently for OCR/relay.
 - **`agent/`** — runs on the home Windows PC (not always on): dials OUT to the VPS over HTTPS (pull
-  model), downloads queued files, and writes them to a local documents folder.
+  model) and mirrors documents (relayed from Telegram via the VPS) into a local backup folder.
 
-Because the home PC isn't always on, files are buffered on the VPS and flushed to the PC when it's
-online, so intake never depends on the PC being up. The pull model means the VPS needs **no inbound
-access to the home network** (no VPN/port-forwarding). The documents folder is backed up out-of-band
-to a removable SSD (a manual step, not driven by the software). Implementation is in progress — most
-domain code is still to be written; follow the roadmap in `docs/PLAN.md`.
+Storage roles: **Telegram = primary**, VPS = registry/orchestrator, PC = owned backup (synced when
+online), removable SSD = manual cold copy. The pull model means the VPS needs **no inbound access to
+the home network** (no VPN/port-forwarding). Implementation is in progress — most domain code is
+still to be written; follow the roadmap in `docs/PLAN.md`.
 
 ## Stack
 
@@ -37,7 +38,7 @@ domain code is still to be written; follow the roadmap in `docs/PLAN.md`.
   (Step 3) are added with their roadmap steps to keep each build green.
 - **`agent`**: deliberately **not** a Spring app (minimal footprint on the home PC) — plain Java with
   Jackson, built into a runnable fat JAR via the shade plugin. HTTP uses the built-in `java.net.http`
-  client; it writes to the local filesystem (no SMB/network storage).
+  client; it writes backups to the local filesystem (no SMB/network storage).
 - **Maven** via the bundled wrapper (`mvnw` / `mvnw.cmd`) — no system Maven required.
 - Server configuration lives in `server/src/main/resources/application.yaml`.
 
@@ -74,5 +75,5 @@ unaffected (they use the IDE's configured SDK).
   populating that metadata.
 - **Secrets never go in git** — Telegram token, DB password, and the agent API token are provided via
   environment variables (see `docs/SETUP.md`).
-- Respect the queue invariants in `docs/PLAN.md` (delete-after-confirm, idempotency, persistence
-  across restart, atomic writes) — they exist to prevent silent document loss.
+- Respect the sync invariants in `docs/PLAN.md` (mark-after-confirm, idempotency, persistence across
+  restart, atomic writes) so the PC backup stays consistent.

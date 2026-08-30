@@ -1,34 +1,35 @@
 # home-docs-registrar — implementation plan
 
 > Durable copy of the agreed design and roadmap. Any Claude Code session (or human) should read
-> this first. It is the source of truth for *why* the project is shaped the way it is.
+> this first. It is the source of truth for *why* the project is shaped this way.
 
 ## What this is
 
 A personal registry for home paper documents (contracts, warranties, receipts, …). Intake pipeline:
 
-1. User photographs a document and sends it to a **Telegram bot as a file** (not a compressed "photo" — compression hurts OCR).
+1. User photographs a document and sends it to a **Telegram bot as a file** (not a compressed "photo" — compression hurts OCR and archival quality).
 2. The bot runs **OCR**, shows the extracted text/fields, the user confirms/corrects them in the dialog.
 3. The bot asks for the **card-catalog section** (scan the section's QR, or pick from a list).
-4. The digitized file is stored in a **folder on the home PC**; the DB row keeps the OCR text/fields, the file path, and the physical location.
+4. The registry row (OCR text/fields, physical location, and the file's Telegram `file_id` + `channel_message_id`) is saved in Postgres. The digitized file itself stays on **Telegram** — the bot re-posts it into a **private archive channel** it administers (as a *document*, byte-exact). It is **backed up to the home PC** when the PC is next online.
 
-## Architecture: two apps + store-and-forward queue
+## Architecture: Telegram-primary store, VPS registry, PC backup
 
-The home PC is **not always on**, so the system is split so intake never depends on the PC being up:
+Storage roles (this is the key idea):
 
-- **`server/`** (runs on the VPS): Telegram bot, OCR, PostgreSQL registry, on-disk file queue, HTTPS API, disk-space monitor.
-- **`agent/`** (runs on the home Windows PC, on only sometimes): pulls the queue and writes files to a local folder.
+- **Telegram = primary file store.** At ingest the bot re-posts the document into a **private channel** the user owns and the bot administers, and stores that message's `file_id` + `channel_message_id`. The bot re-sends by `file_id` on request — instantly, from anywhere, without the home PC. Using a channel (not the personal chat) decouples the archive from the user's chat history and gives a browsable view.
+- **VPS (`server/`) = registry + orchestrator, holds no file archive.** It keeps only metadata + `file_id`/`channel_message_id` in Postgres (VPS disk is limited). It downloads a file from Telegram **transiently** to OCR it (and to relay it to the PC for backup), then discards the bytes.
+- **Home PC (`agent/`) = backup, synced when online.** When the PC comes on, the agent dials OUT to the VPS, learns which documents it hasn't backed up, pulls them (the VPS relays the bytes from Telegram), and writes them to a local folder. A **removable SSD** is a further cold copy (manual). After the first backup a document has 3 copies: Telegram + PC + SSD.
 
-Flow: a document arrives → the server OCRs it and writes metadata to Postgres **immediately**, and puts the file in a queue on the VPS. When the home PC comes online, the **agent dials OUT to the VPS over HTTPS (pull model)**, downloads queued files, writes them to the local documents folder, verifies, acks; the VPS then deletes its copy.
+Flow: document arrives → bot re-posts it to the archive channel, gets `file_id`/`channel_message_id`, downloads it once to OCR, writes metadata to Postgres, discards the bytes → retrieval = `file_id` re-send → backup happens opportunistically when the PC is online.
 
-Consequence of the pull model: the VPS needs **no inbound access to the home network** — no VPN/port-forwarding. The agent only needs outbound HTTPS + write access to a local folder.
+Consequence of the pull model: the VPS needs **no inbound access to the home network** (no VPN/port-forwarding). The agent only needs outbound HTTPS + write access to a local folder.
 
 ## Module layout
 
 ```
 home-docs-registrar/            # root = Maven parent/aggregator (packaging=pom)
 ├── server/                     # Spring Boot app (VPS)  — pkg com.example.homedocsregistrar
-├── agent/                      # plain Java app (Windows) — pkg com.example.homedocsagent
+├── agent/                      # plain Java app (Windows) — pkg com.example.homedocsagent (backup syncer)
 ├── docs/PLAN.md                # this file
 ├── docs/SETUP.md               # one-time manual setup steps
 └── CLAUDE.md
@@ -36,39 +37,47 @@ home-docs-registrar/            # root = Maven parent/aggregator (packaging=pom)
 
 ## Key decisions (with rationale)
 
-- **OCR = local Tesseract (Tess4J, `rus`)** — chosen over paid Yandex Vision / cloud vision-LLMs for budget (zero per-request cost) and privacy (documents stay on the user's own machine). Compensate for phone-photo quality with preprocessing + human-in-the-loop field confirmation. Auto field-extraction is a later, pluggable module.
-- **DB = PostgreSQL** — for good Russian full-text search (morphology/stemming). It is the always-available source of truth.
-- **Storage = a folder on the home PC.** The digitized files live on the PC's local filesystem (the agent writes there directly). An Apple Time Capsule / SMB was considered as network storage and **dropped** — it added the most complexity (SMB3 via TimeCapsuleSMB, `jcifs-ng`, a fixed IP, a Mac to set it up) for little gain now that the PC holds the files. The "digital file link" is a local path on the PC; retrieval requires the PC to be on (accepted).
-- **Backup = a removable SSD (manual, out-of-band).** Guards the single-disk risk for irreplaceable papers. The user already owns the SSD; backup is a periodic manual copy of the documents folder — **not** driven by the software.
-- **Agent packaging = plain JAR + Windows Task Scheduler (at logon)** — chosen for minimal footprint; Docker was considered and rejected (Docker Desktop + WSL2 too heavy, and also login-dependent). Optional later polish: jpackage `.exe`/`.msi`, or WinSW to run as a true service.
-- **Queue on the VPS = plaintext files on disk** (no at-rest encryption — user's choice; Tesseract sees plaintext at intake anyway).
+- **Storage = Telegram primary + PC backup (+ SSD).** The archive lives on Telegram in a **private channel** (owner = the user, admin = the bot; config `ARCHIVE_CHANNEL_ID`); files are stored as **documents** (byte-exact, never as recompressed photos) and retrieved by `file_id`. The VPS keeps only metadata + `file_id`/`channel_message_id` because **VPS disk is limited**; the PC keeps an owned backup synced when online; the SSD is a manual cold copy. Earlier designs (Time Capsule over SMB; then PC-primary) were dropped.
+- **Retrieval by `file_id`** — the bot re-sends the stored file instantly, from anywhere, PC-independent.
+- **OCR = local Tesseract (Tess4J, `rus`)** — budget (zero per-request cost) + privacy (documents stay on the user's own machine for OCR). Human-in-the-loop field confirmation compensates for phone-photo quality. Auto field-extraction is a later, pluggable module.
+- **DB = PostgreSQL** — good Russian full-text search (morphology/stemming); the always-available source of truth for text/metadata.
+- **Agent packaging = plain JAR + Windows Task Scheduler (at logon)** — minimal footprint; Docker rejected (too heavy, login-dependent). Optional later: jpackage `.exe`/`.msi`, or WinSW service.
 
-## Queue invariants (must never lose a document)
+## Known constraints
 
-1. **Delete-after-confirm** — the VPS deletes its copy ONLY after the agent confirms a full, durable write to the documents folder (size/hash verified).
-2. **Idempotency** — items keyed by stable id / content hash; a retried hand-off (e.g. lost ack) must not duplicate.
-3. **Persistence across restart** — queue lives on disk + a Postgres status column (`PENDING_UPLOAD` / `STORED`), never only in memory.
-4. **Atomic write** — write to a temp name → verify → rename within the same folder.
-5. **Search-before-sync** — OCR text/metadata go to Postgres immediately, so search works even while the binary is still queued and the PC is offline; only file retrieval waits.
+- **Store as a document, not a photo**: Telegram recompresses photos (quality/OCR loss); documents keep the original bytes. Always send/re-post as a document.
+- **Telegram Bot API limits**: a bot can **download** files up to ~20 MB and **send** up to ~50 MB. Fine for compressed PDFs/photos; very large multi-page scans are the exception (a self-hosted local Bot API server lifts the limit but adds infra — out of scope). Normalize scans to a compact PDF at ingest.
+- **Brief single-copy window**: between ingest and the first PC backup, the only copy is on Telegram (low risk; acceptable). After backup there are 3 copies.
+- **`file_id` is bot-specific**: it is tied to the current bot token; changing bots invalidates stored `file_id`s. The PC/SSD backup is the ownership hedge.
+
+## Sync invariants (backup is benign, but still correct)
+
+Telegram holds the primary copy, so the PC backup sync is not on the critical path for data loss. Still:
+
+1. **Mark-after-confirm** — a document is flagged `BACKED_UP` only after the agent confirms a full, verified local write (size/hash).
+2. **Idempotency** — keyed by stable document id / content hash; a retried backup (e.g. lost ack) must not duplicate; the agent checks "already present?" first.
+3. **Persistence across restart** — backup state lives in Postgres (`PENDING_BACKUP` / `BACKED_UP`), never only in memory.
+4. **Atomic write** — temp name → verify → rename within the backup folder.
+5. **Search + retrieval never wait on the PC** — metadata/text (Postgres) and file retrieval (`file_id`) are always available regardless of whether the PC is online.
 
 ## Roadmap (status)
 
-- [x] **Step 1 — monorepo skeleton + durable docs.** Root→parent/aggregator; `server` (web+test) & `agent` (Jackson, shade) modules; existing code moved to `server/`; agent stub; `docs/PLAN.md` + `docs/SETUP.md`; `CLAUDE.md`. Green: `mvnw clean package` builds both, `contextLoads` passes.
-- [ ] **Step 2 — domain & storage (server).** JPA `Document` + `CatalogSection`; queue status enum; Postgres FTS (`tsvector` russian + GIN); Spring Data repositories. Add `data-jpa` + `postgresql` and pick a test-datasource strategy that keeps `contextLoads` green.
-- [ ] **Step 3 — Telegram intake + OCR (server).** Long-polling bot with a dialog state machine (file → OCR → confirm fields → pick section → enqueue); "sent as file, not a compressed photo" check; `OcrService` on Tess4J (`rus`). Decide the Telegram library (starter vs. raw Bot API via `RestClient`).
-- [ ] **Step 4 — queue, disk monitor, agent API (server).** On-disk queue + DB status; `DiskSpaceMonitor` with hysteresis + Telegram alert; REST `/api/queue` (`pending` / `file` / `ack`, bearer token); enforce the invariants above.
-- [ ] **Step 5 — agent (Windows).** Pull loop → write to the local documents folder (temp → verify → rename) → ack; idempotent + backoff; env config (`VPS_URL`, `AGENT_TOKEN`, `TARGET_DIR`); fat JAR; Task Scheduler autostart. Optional tray icon.
-- [ ] **Step 6 — SETUP.md + verification.** Fill in the one-time manual steps; run build/tests + an end-to-end check.
+- [x] **Step 1 — monorepo skeleton + durable docs.** Parent/aggregator + `server` (web+test) & `agent` (Jackson, shade); existing code in `server/`; agent stub; `docs/*`; `CLAUDE.md`. Green build, `contextLoads` passes.
+- [ ] **Step 2 — domain & storage (server).** JPA `Document` (incl. `telegram_file_id`, `channel_message_id`, `backup_status`) + `CatalogSection`; Postgres FTS (`tsvector` russian + GIN); Spring Data repositories. Add `data-jpa` + `postgresql`, keep `contextLoads` green (H2 for the test datasource; Postgres-specific FTS stays out of the test path).
+- [ ] **Step 3 — Telegram intake + OCR (server).** Long-polling bot dialog (file → OCR → confirm fields → pick section → re-post to the archive channel → save row); "sent as file, not a compressed photo" check; download-for-OCR then discard; `OcrService` on Tess4J (`rus`). Config `ARCHIVE_CHANNEL_ID`. Decide the Telegram library (starter vs. raw Bot API via `RestClient`).
+- [ ] **Step 4 — retrieval + backup API (server).** Bot command to re-send a document by `file_id`; REST for the agent (list `PENDING_BACKUP`, relay bytes from Telegram, mark `BACKED_UP`; bearer token).
+- [ ] **Step 5 — agent (Windows).** Backup sync loop: pull pending → write to local folder (temp → verify → rename) → mark backed up; idempotent + backoff; env config (`VPS_URL`, `AGENT_TOKEN`, `BACKUP_DIR`); fat JAR; Task Scheduler. Optional tray icon.
+- [ ] **Step 6 — SETUP.md + verification.** Fill in manual steps; build/tests + end-to-end check.
 
 ## Open decisions (resolve at implementation time)
 
-- **Telegram library under Spring Boot 4.1.1 / Spring 7** — check `telegrambots` long-polling starter compatibility; safe minimal-footprint fallback: call the Telegram Bot API directly via `RestClient` (no third-party dependency). Decide in Step 3.
-- **Tess4J + native Tesseract** — the VPS needs Tesseract installed plus `rus.traineddata` (documented in `docs/SETUP.md`).
-- **Queue payload format** — store the original image, or a normalized compressed PDF (recommended: compressed PDF, which is also the archival copy; smaller queue). Decide in Step 4.
+- **Telegram library under Spring Boot 4.1.1 / Spring 7** — check `telegrambots` long-polling starter; safe minimal fallback: call the Bot API directly via `RestClient` (no third-party dep). Decide in Step 3.
+- **Tess4J + native Tesseract** — the VPS needs Tesseract + `rus.traineddata` (documented in `docs/SETUP.md`).
+- **Normalization** — normalize the incoming scan to a compact PDF before re-posting (keeps within Telegram limits, uniform archive). Decide in Step 3.
 
 ## Verification
 
 - Build: `.\mvnw.cmd clean package` — both modules green; `contextLoads` passes.
-- Server (unit/slice): `DiskSpaceMonitor` hysteresis; queue status transitions; REST contract (MockMvc: pending/file/ack, ack idempotency); OCR smoke test on a sample `rus` image.
-- Agent: pull → verify → ack loop behind a write interface (fake writer / temp dir instead of the real folder) — idempotency, atomicity (temp → rename), backoff.
-- End-to-end (manual): send a document to the bot → DB row + queued file → run the agent → file lands in the documents folder, DB flips to `STORED`, VPS copy deleted; search works before sync.
+- Server (unit/slice): backup status transitions; REST contract (MockMvc: list-pending / relay / mark-backed-up, idempotency); retrieval by `file_id`; OCR smoke test on a sample `rus` image.
+- Agent: backup loop behind a write interface (temp dir instead of the real folder) — idempotency, atomicity (temp → rename), backoff.
+- End-to-end (manual): send a document → row + `file_id`/`channel_message_id` in Postgres, file in the archive channel and retrievable via the bot from anywhere → bring the PC online → file mirrored locally, row flips to `BACKED_UP`.
