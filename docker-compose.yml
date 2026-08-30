@@ -10,6 +10,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    ports:
+      # Localhost only, for admin access (e.g. IDE DB tools) over an SSH tunnel to the VPS.
+      # Never bind this to 0.0.0.0 — Postgres would otherwise be reachable from the internet.
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-home_docs} -d ${POSTGRES_DB:-home_docs}"]
       interval: 10s
