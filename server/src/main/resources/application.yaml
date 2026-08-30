@@ -1,3 +1,13 @@
 spring:
   application:
     name: home-docs-registrar
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/home_docs}
+    username: ${DB_USER:home_docs}
+    password: ${DB_PASSWORD:}
+  jpa:
+    open-in-view: false
+    hibernate:
+      # MVP: let Hibernate manage the schema. Postgres-specific FTS (tsvector + GIN) is added
+      # separately in step 3; consider switching to Flyway migrations then.
+      ddl-auto: update
