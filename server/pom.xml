@@ -14,6 +14,7 @@
 
     <properties>
         <telegrambots.version>9.0.0</telegrambots.version>
+        <tess4j.version>5.13.0</tess4j.version>
     </properties>
 
     <dependencies>
@@ -39,7 +40,13 @@
             <version>${telegrambots.version}</version>
         </dependency>
 
-        <!-- Production DB. Tess4J OCR (net.sourceforge.tess4j) is added later in step 3. -->
+        <!-- OCR: Tess4J wraps native Tesseract, which is installed in the Docker image runtime stage. -->
+        <dependency>
+            <groupId>net.sourceforge.tess4j</groupId>
+            <artifactId>tess4j</artifactId>
+            <version>${tess4j.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

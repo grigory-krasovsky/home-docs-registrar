@@ -16,3 +16,8 @@ telegram:
   # Blank when unset -> the bot is disabled but the app still boots (see TelegramBotConfig).
   bot-token: ${TELEGRAM_BOT_TOKEN:}
   archive-channel-id: ${ARCHIVE_CHANNEL_ID:}
+
+ocr:
+  # Tesseract language data path inside the Docker image; language pack: rus.
+  data-path: ${TESSDATA_PATH:/usr/share/tesseract-ocr/5/tessdata}
+  language: ${OCR_LANGUAGE:rus}
