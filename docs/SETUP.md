@@ -35,10 +35,11 @@ values (paths, ids, tokens) as they are decided. Detailed instructions are writt
 
 ## 4. GitHub Actions — deploy access
 
-- Add repository **secrets**: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (a private key whose public half is in the VPS user's `authorized_keys`).
+- Add repository **secrets** (deploy uses SSH **password** auth): `SSH_HOST` (VPS IP), `SSH_USER` (VPS user), `SSH_PASSWORD` (VPS password).
 - The SSH user must be able to run Docker (in the `docker` group).
 - On push to `master`: build + test → image pushed to **GHCR** (`ghcr.io/<owner>/home-docs-server`) → SSH deploy.
-  Until `VPS_HOST` is set, the deploy steps are **skipped** (the image is still built and pushed, workflow stays green).
+  Until `SSH_HOST` is set, the deploy steps are **skipped** (the image is still built and pushed, workflow stays green).
+- Password auth is convenient but weaker than an SSH key; consider switching to a deploy key later.
 - _TODO: add the three secrets; run the workflow once and confirm the deploy._
 
 ## 5. VPS — Tesseract OCR
