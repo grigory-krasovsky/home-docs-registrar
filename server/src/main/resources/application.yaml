@@ -18,6 +18,9 @@ telegram:
   archive-channel-id: ${ARCHIVE_CHANNEL_ID:}
 
 ocr:
-  # Tesseract language data path inside the Docker image; language pack: rus.
+  # Tesseract language data path inside the Docker image.
   data-path: ${TESSDATA_PATH:/usr/share/tesseract-ocr/5/tessdata}
-  language: ${OCR_LANGUAGE:rus}
+  # rus+eng: documents mix Cyrillic and Latin (emails, model numbers), which reduces misreads.
+  language: ${OCR_LANGUAGE:rus+eng}
+  # Tesseract page segmentation mode (3 = automatic).
+  page-seg-mode: ${OCR_PSM:3}

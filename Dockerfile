@@ -18,7 +18,7 @@ WORKDIR /app
 # JPEG before OCR (Java's ImageIO cannot read HEIC).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      tesseract-ocr tesseract-ocr-rus libheif-examples libheif-plugin-libde265 \
+      tesseract-ocr tesseract-ocr-rus libheif-examples libheif-plugin-libde265 imagemagick \
  && lib="$(find /usr/lib -name 'libtesseract.so.*' | head -1)" && ln -sf "$lib" "${lib%.so.*}.so" \
  && rm -rf /var/lib/apt/lists/*
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
