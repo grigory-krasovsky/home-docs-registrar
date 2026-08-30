@@ -10,23 +10,17 @@
 
     <artifactId>home-docs-agent</artifactId>
     <name>home-docs-agent</name>
-    <description>Home Windows side: pulls queued files from the VPS and writes them to the Time Capsule over SMB3</description>
+    <description>Home Windows side: pulls queued files from the VPS and writes them to a local folder on the home PC</description>
 
     <!-- Deliberately NOT a Spring app (minimal footprint). Inherits the parent only for
-         dependency/plugin version alignment. HTTP client is the built-in java.net.http. -->
+         dependency/plugin version alignment. HTTP client is the built-in java.net.http.
+         No SMB/network storage: the agent writes to the PC's local filesystem. -->
 
     <properties>
-        <jcifs-ng.version>2.1.10</jcifs-ng.version>
         <maven-shade-plugin.version>3.5.1</maven-shade-plugin.version>
     </properties>
 
     <dependencies>
-        <!-- SMB3 client (pure Java over TCP; no OS SMB stack, works from Windows to the SMB3 capsule) -->
-        <dependency>
-            <groupId>eu.agno3.jcifs</groupId>
-            <artifactId>jcifs-ng</artifactId>
-            <version>${jcifs-ng.version}</version>
-        </dependency>
         <!-- JSON for the agent<->VPS API (version managed by the Spring Boot parent) -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

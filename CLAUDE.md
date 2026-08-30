@@ -12,19 +12,20 @@ architecture, the key decisions, and the step-by-step roadmap). Read it before m
 
 `home-docs-registrar` is a personal registry for home paper documents (contracts, warranties,
 receipts). A Telegram bot receives a photographed document, OCRs it, stores the text + fields in a
-database, and files the digitized copy on a home Apple Time Capsule; the DB also records the physical
-location (a card catalog whose sections carry QR codes).
+database, and files the digitized copy in a folder on the home Windows PC; the DB also records the
+physical location (a card catalog whose sections carry QR codes).
 
 It is a **two-module monorepo** (see `docs/PLAN.md` for the full picture):
 
 - **`server/`** — runs on the VPS: Telegram bot, OCR, PostgreSQL registry, an on-disk store-and-forward
   queue, an HTTPS API for the agent, and a disk-space monitor.
 - **`agent/`** — runs on the home Windows PC (not always on): dials OUT to the VPS over HTTPS (pull
-  model), downloads queued files, and writes them to the Time Capsule over SMB3.
+  model), downloads queued files, and writes them to a local documents folder.
 
-Because the home PC isn't always on and the capsule can't be a tunnel endpoint, files are buffered on
-the VPS and flushed to the capsule when the PC is online. The pull model means the VPS needs **no
-inbound access to the home network** (no VPN/port-forwarding). Implementation is in progress — most
+Because the home PC isn't always on, files are buffered on the VPS and flushed to the PC when it's
+online, so intake never depends on the PC being up. The pull model means the VPS needs **no inbound
+access to the home network** (no VPN/port-forwarding). The documents folder is backed up out-of-band
+to a removable SSD (a manual step, not driven by the software). Implementation is in progress — most
 domain code is still to be written; follow the roadmap in `docs/PLAN.md`.
 
 ## Stack
@@ -35,8 +36,8 @@ domain code is still to be written; follow the roadmap in `docs/PLAN.md`.
 - **`server`**: `spring-boot-starter-web` now; `data-jpa` + `postgresql` (Step 2) and Tess4J OCR
   (Step 3) are added with their roadmap steps to keep each build green.
 - **`agent`**: deliberately **not** a Spring app (minimal footprint on the home PC) — plain Java with
-  `jcifs-ng` (SMB3) + Jackson, built into a runnable fat JAR via the shade plugin. HTTP uses the
-  built-in `java.net.http` client.
+  Jackson, built into a runnable fat JAR via the shade plugin. HTTP uses the built-in `java.net.http`
+  client; it writes to the local filesystem (no SMB/network storage).
 - **Maven** via the bundled wrapper (`mvnw` / `mvnw.cmd`) — no system Maven required.
 - Server configuration lives in `server/src/main/resources/application.yaml`.
 
@@ -59,6 +60,10 @@ java -jar agent/target/home-docs-agent.jar      # run the agent (after packaging
 
 (Drop the `.cmd` and use `./mvnw` when running through the Bash tool.) There is no separate lint step;
 compilation via `package`/`compile` is the only static check.
+
+**Note:** the shell build needs `JAVA_HOME` pointing at a **JDK 21** (this machine's `JAVA_HOME`
+defaults to a JDK 17, which fails with "release version 21 not supported"). IntelliJ builds are
+unaffected (they use the IDE's configured SDK).
 
 ## Conventions
 
