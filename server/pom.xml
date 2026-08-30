@@ -12,6 +12,10 @@
     <name>home-docs-server</name>
     <description>VPS side: Telegram bot, OCR, Postgres registry, retrieval by file_id, backup API</description>
 
+    <properties>
+        <telegrambots.version>9.0.0</telegrambots.version>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -22,7 +26,20 @@
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
-        <!-- Production DB. Tess4J OCR (net.sourceforge.tess4j) is added in step 3. -->
+        <!-- Telegram: plain libraries (no Spring starter) — proven on Spring Boot 4 in the sibling
+             Notifier project. telegrambots-client = typed API calls, -longpolling = the polling runner. -->
+        <dependency>
+            <groupId>org.telegram</groupId>
+            <artifactId>telegrambots-longpolling</artifactId>
+            <version>${telegrambots.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.telegram</groupId>
+            <artifactId>telegrambots-client</artifactId>
+            <version>${telegrambots.version}</version>
+        </dependency>
+
+        <!-- Production DB. Tess4J OCR (net.sourceforge.tess4j) is added later in step 3. -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

@@ -11,3 +11,8 @@ spring:
       # MVP: let Hibernate manage the schema. Postgres-specific FTS (tsvector + GIN) is added
       # separately in step 3; consider switching to Flyway migrations then.
       ddl-auto: update
+
+telegram:
+  # Blank when unset -> the bot is disabled but the app still boots (see TelegramBotConfig).
+  bot-token: ${TELEGRAM_BOT_TOKEN:}
+  archive-channel-id: ${ARCHIVE_CHANNEL_ID:}
