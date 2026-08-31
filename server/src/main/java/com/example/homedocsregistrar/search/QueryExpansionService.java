@@ -31,8 +31,11 @@ public class QueryExpansionService {
 
     private static final String SYSTEM = """
             Ты помогаешь искать бумажные документы (чеки, договоры, гарантии, свидетельства и т.п.).
-            По запросу пользователя верни связанные по смыслу русские слова и короткие словосочетания —
-            синонимы, близкие термины, слова, которые реально встречаются в тексте таких документов.
+            По запросу пользователя верни русские слова и короткие словосочетания, которые встречаются
+            в ТЕКСТЕ САМИХ официальных документов на эту тему — юридические/официальные термины,
+            синонимы, близкие понятия. НЕ бытовые/событийные ассоциации.
+            Пример: для «свадьба» → брак, бракосочетание, заключение брака, супруги, ЗАГС
+            (а НЕ «торжество», «банкет», «ресторан»).
             Только термины, каждый с новой строки, без нумерации, кавычек и пояснений. Не более 10.""";
 
     private final AnthropicClient client;
@@ -64,6 +67,9 @@ public class QueryExpansionService {
             MessageCreateParams params = MessageCreateParams.builder()
                     .model(model)
                     .maxTokens(256L)
+                    // temperature 0 -> deterministic expansion: the same query always yields the same
+                    // terms, and the model picks the most obvious related words (e.g. свадьба -> брак).
+                    .temperature(0.0)
                     .system(SYSTEM)
                     .addUserMessage(query)
                     .build();

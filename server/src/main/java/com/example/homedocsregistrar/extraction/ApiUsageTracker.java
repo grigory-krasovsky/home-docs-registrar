@@ -44,7 +44,7 @@ public class ApiUsageTracker {
         }
         long inTotal = total != null ? total.getInputTokens() : inputTokens;
         long outTotal = total != null ? total.getOutputTokens() : outputTokens;
-        log.info("Vision usage: in={} out={} (model={}); cumulative in={} out={} total={} tokens",
+        log.info("Claude usage: in={} out={} (model={}); cumulative in={} out={} total={} tokens",
                 inputTokens, outputTokens, model, inTotal, outTotal, inTotal + outTotal);
     }
 
