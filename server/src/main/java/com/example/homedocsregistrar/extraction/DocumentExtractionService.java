@@ -6,6 +6,7 @@ import com.anthropic.models.messages.Base64ImageSource;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.ImageBlockParam;
 import com.anthropic.models.messages.MessageCreateParams;
+import com.anthropic.models.messages.StructuredMessage;
 import com.anthropic.models.messages.StructuredMessageCreateParams;
 import com.anthropic.models.messages.TextBlockParam;
 import com.example.homedocsregistrar.ocr.HeicConverter;
@@ -42,13 +43,16 @@ public class DocumentExtractionService {
     private final AnthropicClient client;
     private final String model;
     private final HeicConverter heicConverter;
+    private final ApiUsageTracker usageTracker;
 
     public DocumentExtractionService(@Value("${anthropic.api-key:}") String apiKey,
                                      @Value("${anthropic.workspace-id:}") String workspaceId,
                                      @Value("${anthropic.model:claude-haiku-4-5}") String model,
-                                     HeicConverter heicConverter) {
+                                     HeicConverter heicConverter,
+                                     ApiUsageTracker usageTracker) {
         this.model = model;
         this.heicConverter = heicConverter;
+        this.usageTracker = usageTracker;
         if (apiKey == null || apiKey.isBlank()) {
             this.client = null;
         } else {
@@ -95,13 +99,24 @@ public class DocumentExtractionService {
                 .build();
 
         try {
-            return client.messages().create(params).content().stream()
+            StructuredMessage<ExtractedFields> response = client.messages().create(params);
+            recordUsage(response);
+            return response.content().stream()
                     .flatMap(block -> block.text().stream())
                     .map(text -> text.text())
                     .findFirst();
         } catch (RuntimeException e) {
             log.error("Vision extraction failed", e);
             return Optional.empty();
+        }
+    }
+
+    /** Persist/log token usage; best-effort so a tracking failure never discards a good extraction. */
+    private void recordUsage(StructuredMessage<ExtractedFields> response) {
+        try {
+            usageTracker.record(response.usage().inputTokens(), response.usage().outputTokens(), model);
+        } catch (RuntimeException e) {
+            log.warn("Failed to record API usage", e);
         }
     }
 
