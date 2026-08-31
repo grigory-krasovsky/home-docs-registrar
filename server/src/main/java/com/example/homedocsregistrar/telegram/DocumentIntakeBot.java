@@ -14,8 +14,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.longpolling.util.LongPollingSingleThreadUpdateConsumer;
+import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.message.Message;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -63,6 +67,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     @Override
     public void consume(Update update) {
         try {
+            if (update.hasCallbackQuery()) {
+                handleCallback(update.getCallbackQuery());
+                return;
+            }
             if (update.hasChannelPost()) {
                 logChannelIdForSetup(update.getChannelPost());
                 return;
@@ -107,11 +115,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             }
 
             String text = summary(result.document(), fields);
-            text += "\n\nФайл прислать: /get " + result.document().getId();
             if (extraction != null) {
                 text += "\n\n" + tokenStatus(extraction);
             }
-            sender.send(chatId, text);
+            sender.send(chatId, text, openFileKeyboard(result.document().getId(), "📎 Открыть файл"));
         } catch (Exception e) {
             log.error("Intake failed for document {}", fileId, e);
             sender.send(chatId, "Не удалось обработать файл. Попробуйте ещё раз.");
@@ -137,7 +144,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
     }
 
-    /** Full-text search by content; lists ranked matches, each retrievable with /get. */
+    /** Full-text search by content; lists ranked matches, each with a one-tap button to open the file. */
     private void handleSearch(long chatId, String query) {
         if (query == null || query.isBlank()) {
             sender.send(chatId, "Введите слова для поиска, например: /search гарантия холодильник");
@@ -148,14 +155,17 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.send(chatId, "По запросу «" + query + "» ничего не найдено.");
             return;
         }
-        StringBuilder text = new StringBuilder("Найдено (" + hits.size() + ") по «" + query + "»:");
+        StringBuilder text = new StringBuilder(
+                "Найдено (" + hits.size() + ") по «" + query + "». Нажмите кнопку, чтобы открыть файл:");
+        var keyboard = InlineKeyboardMarkup.builder();
         for (Document hit : hits) {
             text.append("\n\n").append(resultLine(hit));
+            keyboard.keyboardRow(new InlineKeyboardRow(openFileButton(hit.getId(), buttonLabel(hit))));
         }
-        sender.send(chatId, text.toString());
+        sender.send(chatId, text.toString(), keyboard.build());
     }
 
-    /** One search hit: id + fields we have, and how to fetch the file. */
+    /** One search hit: id + the fields we have (the file is opened via the row's button). */
     private String resultLine(Document document) {
         StringBuilder line = new StringBuilder("#").append(document.getId());
         if (document.getDocType() != null && !document.getDocType().isBlank()) {
@@ -171,7 +181,6 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         if (!meta.isBlank()) {
             line.append('\n').append(meta);
         }
-        line.append("\nФайл: /get ").append(document.getId());
         return line.toString();
     }
 
@@ -208,30 +217,73 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.send(chatId, "Укажите номер документа, например: /get 42");
             return;
         }
+        String error = sendDocumentFile(chatId, id);
+        if (error != null) {
+            sender.send(chatId, error);
+        }
+    }
+
+    /** A tapped "open file" button (callback data get:&lt;id&gt;): send the file and clear the spinner. */
+    private void handleCallback(CallbackQuery callback) {
+        Long id = callback.getData() != null && callback.getData().startsWith("get:")
+                ? parseLong(callback.getData().substring("get:".length()))
+                : null;
+        Long chatId = callback.getMessage() == null ? null : callback.getMessage().getChatId();
+        if (id == null || chatId == null) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        String error = sendDocumentFile(chatId, id);
+        // On success answer silently (the file is the feedback); on failure show the reason as a toast.
+        sender.answerCallback(callback.getId(), error);
+    }
+
+    /** Send document {@code id}'s file to the chat; returns an error message, or null on success. */
+    private String sendDocumentFile(long chatId, long id) {
         Document document = retrievalService.byId(id).orElse(null);
         if (document == null) {
-            sender.send(chatId, "Документ id=" + id + " не найден.");
-            return;
+            return "Документ id=" + id + " не найден.";
         }
         String fileId = document.getTelegramFileId();
         if (fileId == null || fileId.isBlank()) {
-            sender.send(chatId, "Для документа id=" + id + " не сохранён файл.");
-            return;
+            return "Для документа id=" + id + " не сохранён файл.";
         }
         Integer sent = sender.sendDocumentByFileId(String.valueOf(chatId), fileId, retrievalCaption(document));
-        if (sent == null) {
-            sender.send(chatId, "Не удалось отправить файл документа id=" + id + ". Попробуйте позже.");
-        }
+        return sent == null ? "Не удалось отправить файл документа id=" + id + ". Попробуйте позже." : null;
+    }
+
+    /** A one-button inline keyboard that opens document {@code id}'s file. */
+    private InlineKeyboardMarkup openFileKeyboard(long id, String label) {
+        return InlineKeyboardMarkup.builder()
+                .keyboardRow(new InlineKeyboardRow(openFileButton(id, label)))
+                .build();
+    }
+
+    private InlineKeyboardButton openFileButton(long id, String label) {
+        return InlineKeyboardButton.builder().text(label).callbackData("get:" + id).build();
+    }
+
+    /** Compact button label for a search hit: id + a short name. */
+    private String buttonLabel(Document document) {
+        String name = document.getTitle() != null && !document.getTitle().isBlank()
+                ? document.getTitle()
+                : (document.getDocType() != null && !document.getDocType().isBlank() ? document.getDocType() : "документ");
+        return "📎 #" + document.getId() + " · " + truncate(name, 30);
+    }
+
+    private static String truncate(String value, int max) {
+        return value.length() <= max ? value : value.substring(0, max - 1) + "…";
     }
 
     /** Parse the document id from a "/get 42" (or "/doc 42") command; null if absent or not a number. */
     private static Long parseDocId(String text) {
         String[] parts = text.trim().split("\\s+");
-        if (parts.length < 2) {
-            return null;
-        }
+        return parts.length < 2 ? null : parseLong(parts[1]);
+    }
+
+    private static Long parseLong(String value) {
         try {
-            return Long.parseLong(parts[1]);
+            return Long.parseLong(value.trim());
         } catch (NumberFormatException e) {
             return null;
         }
