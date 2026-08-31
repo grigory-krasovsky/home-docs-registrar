@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.longpolling.util.LongPollingSingleThreadUpdateConsumer;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.Update;
+import org.telegram.telegrambots.meta.api.objects.User;
 import org.telegram.telegrambots.meta.api.objects.message.Message;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
@@ -26,6 +27,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Receives Telegram updates (long polling) and drives document intake: a document sent as a file is
@@ -47,6 +49,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final ApiUsageTracker usageTracker;
     private final UsageEstimator usageEstimator;
     private final TelegramProperties telegram;
+    private final Set<Long> allowedUserIds;
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
@@ -62,13 +65,24 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.usageTracker = usageTracker;
         this.usageEstimator = usageEstimator;
         this.telegram = telegram;
+        this.allowedUserIds = telegram.allowedUserIds() == null ? Set.of() : Set.copyOf(telegram.allowedUserIds());
+        if (this.allowedUserIds.isEmpty()) {
+            log.warn("TELEGRAM_ALLOWED_USER_IDS is not set - the bot is OPEN to any Telegram user");
+        } else {
+            log.info("Bot access restricted to {} Telegram user id(s)", this.allowedUserIds.size());
+        }
     }
 
     @Override
     public void consume(Update update) {
         try {
             if (update.hasCallbackQuery()) {
-                handleCallback(update.getCallbackQuery());
+                CallbackQuery callback = update.getCallbackQuery();
+                if (!isAuthorized(userId(callback.getFrom()))) {
+                    sender.answerCallback(callback.getId(), "Доступ запрещён.");
+                    return;
+                }
+                handleCallback(callback);
                 return;
             }
             if (update.hasChannelPost()) {
@@ -80,6 +94,19 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             }
             Message message = update.getMessage();
             long chatId = message.getChatId();
+            Long fromId = userId(message.getFrom());
+
+            // /whoami is answered before the access check, so a family member can fetch their id to be added.
+            if (message.hasText() && message.getText().strip().toLowerCase(Locale.ROOT).startsWith("/whoami")) {
+                sender.send(chatId, "Ваш Telegram ID: " + fromId);
+                return;
+            }
+            if (!isAuthorized(fromId)) {
+                log.warn("Denied unauthorized Telegram user id={}", fromId);
+                sender.send(chatId, "Доступ запрещён. Ваш Telegram ID: " + fromId
+                        + " — передайте его владельцу бота, чтобы получить доступ.");
+                return;
+            }
 
             if (message.hasDocument()) {
                 handleDocument(chatId, message.getDocument().getFileId(), message.getDocument().getFileName());
@@ -92,6 +119,15 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         } catch (Exception e) {
             log.error("Failed to handle update", e);
         }
+    }
+
+    /** True when no allow-list is configured (open) or the user is on it. */
+    private boolean isAuthorized(Long userId) {
+        return allowedUserIds.isEmpty() || (userId != null && allowedUserIds.contains(userId));
+    }
+
+    private static Long userId(User from) {
+        return from == null ? null : from.getId();
     }
 
     private void handleDocument(long chatId, String fileId, String fileName) {

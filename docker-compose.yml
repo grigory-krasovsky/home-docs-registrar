@@ -36,6 +36,8 @@ services:
       # Used from step 3/4 onwards; leave blank in .env until then.
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       ARCHIVE_CHANNEL_ID: ${ARCHIVE_CHANNEL_ID:-}
+      # Numeric Telegram user ids allowed to use the bot (comma-separated). Empty -> open to everyone.
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
       AGENT_TOKEN: ${AGENT_TOKEN:-}
       # Vision extraction (Claude). Blank -> extraction disabled, the app still runs.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
