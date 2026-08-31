@@ -5,6 +5,7 @@ import com.example.homedocsregistrar.extraction.ApiUsageTracker;
 import com.example.homedocsregistrar.extraction.DocumentExtractionService;
 import com.example.homedocsregistrar.extraction.ExtractedFields;
 import com.example.homedocsregistrar.extraction.Extraction;
+import com.example.homedocsregistrar.extraction.UsageEstimator;
 import com.example.homedocsregistrar.intake.DocumentIntakeService;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
 import org.slf4j.Logger;
@@ -35,16 +36,19 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final DocumentExtractionService extractionService;
     private final DocumentIntakeService intakeService;
     private final ApiUsageTracker usageTracker;
+    private final UsageEstimator usageEstimator;
     private final TelegramProperties telegram;
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
-                             ApiUsageTracker usageTracker, TelegramProperties telegram) {
+                             ApiUsageTracker usageTracker, UsageEstimator usageEstimator,
+                             TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
         this.intakeService = intakeService;
         this.usageTracker = usageTracker;
+        this.usageEstimator = usageEstimator;
         this.telegram = telegram;
     }
 
@@ -142,23 +146,41 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
     /** Per-document token spend plus the running cumulative total, appended to a recognition reply. */
     private String tokenStatus(Extraction extraction) {
-        return "🔢 Токены — документ: " + fmt(extraction.totalTokens())
-                + " (in " + fmt(extraction.inputTokens()) + " / out " + fmt(extraction.outputTokens()) + ")"
-                + "\nВсего израсходовано: " + fmt(usageTracker.currentTotals().total());
+        ApiUsageTracker.Totals totals = usageTracker.currentTotals();
+        StringBuilder text = new StringBuilder()
+                .append("🔢 Токены — документ: ").append(fmt(extraction.totalTokens()))
+                .append(" (in ").append(fmt(extraction.inputTokens()))
+                .append(" / out ").append(fmt(extraction.outputTokens())).append(')')
+                .append("\nВсего израсходовано: ").append(fmt(totals.total()));
+        if (usageEstimator.hasPool()) {
+            text.append("\nОстаток пула: ≈").append(usageEstimator.remainingPercent(totals)).append('%');
+        }
+        return text.toString();
     }
 
-    /** Reply for the /tokens command: cumulative token spend across all recognitions. */
+    /** Reply for the /tokens command: cumulative token spend and the estimated remaining pool. */
     private String tokensSummary() {
         ApiUsageTracker.Totals totals = usageTracker.currentTotals();
-        return "Израсходовано токенов на распознавание: " + fmt(totals.total())
-                + "\n• ввод (in): " + fmt(totals.inputTokens())
-                + "\n• вывод (out): " + fmt(totals.outputTokens())
-                + "\n\nЭто суммарный расход токенов. Остаток кредита — в консоли Anthropic (Billing).";
+        StringBuilder text = new StringBuilder()
+                .append("Израсходовано токенов на распознавание: ").append(fmt(totals.total()))
+                .append("\n• ввод (in): ").append(fmt(totals.inputTokens()))
+                .append("\n• вывод (out): ").append(fmt(totals.outputTokens()));
+        if (usageEstimator.hasPool()) {
+            text.append("\n\nОстаток пула: ≈").append(usageEstimator.remainingPercent(totals)).append('%')
+                    .append(" (≈$").append(fmt2(usageEstimator.remainingUsd(totals))).append(')');
+        }
+        text.append("\n\nОстаток — оценка (точного баланса в API нет). Кредит — в консоли Anthropic (Billing).");
+        return text.toString();
     }
 
     /** Group digits with spaces (e.g. 23 350) so big token counts stay readable. */
     private static String fmt(long tokens) {
         return String.format(Locale.ROOT, "%,d", tokens).replace(',', ' ');
+    }
+
+    /** USD with two decimals (e.g. 3.47). */
+    private static String fmt2(double usd) {
+        return String.format(Locale.ROOT, "%.2f", usd);
     }
 
     /** Until ARCHIVE_CHANNEL_ID is configured, log the id of any channel the bot sees so it can be captured. */

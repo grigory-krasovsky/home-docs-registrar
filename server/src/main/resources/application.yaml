@@ -24,3 +24,12 @@ anthropic:
   # workspace-scoped key. When set, sent as the anthropic-workspace-id header on every request.
   workspace-id: ${ANTHROPIC_WORKSPACE_ID:}
   model: ${ANTHROPIC_MODEL:claude-haiku-4-5}
+  # Remaining-balance estimate for the bot (/tokens + per-recognition status). There is no balance API,
+  # so this is an estimate: the local token counter (spend since it was deployed) times the prices below.
+  # pool-usd = the prepaid credit to count down from (0 -> no % shown); set it to your current Console
+  # balance for the closest estimate. Prices default to Claude Haiku 4.5 ($1 in / $5 out per 1M tokens) —
+  # update them if you change anthropic.model.
+  pool-usd: ${ANTHROPIC_POOL_USD:5.00}
+  price:
+    input-per-mtok: ${ANTHROPIC_PRICE_INPUT_PER_MTOK:1.00}
+    output-per-mtok: ${ANTHROPIC_PRICE_OUTPUT_PER_MTOK:5.00}
