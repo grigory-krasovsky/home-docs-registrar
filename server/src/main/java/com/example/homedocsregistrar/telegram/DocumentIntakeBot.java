@@ -210,6 +210,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
     private void handleDocument(long chatId, String fileId, String fileName) {
         sender.send(chatId, "Файл получен, распознаю…");
+        sender.sendChatAction(chatId, "typing"); // keep a live indicator during download + vision call
         try {
             byte[] bytes = fileService.download(fileId);
 
@@ -265,6 +266,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.send(chatId, "Введите слова для поиска, например: /search гарантия холодильник");
             return;
         }
+        sender.sendChatAction(chatId, "typing"); // «печатает…» while expansion + search run
         DocumentSearchService.SearchResult result = searchService.search(query);
         List<Document> hits = result.hits();
         if (hits.isEmpty()) {
@@ -364,6 +366,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             return "Документ id=" + id + " не найден.";
         }
         List<DocumentPage> pages = document.getPages();
+        sender.sendChatAction(chatId, "upload_document"); // «отправляет файл…» while re-sending pages
         boolean anySent = false;
         for (DocumentPage page : pages) {
             String fileId = page.getTelegramFileId();

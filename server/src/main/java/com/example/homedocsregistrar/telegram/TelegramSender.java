@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
+import org.telegram.telegrambots.meta.api.methods.send.SendChatAction;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
@@ -38,6 +39,19 @@ public class TelegramSender {
         } catch (TelegramApiException e) {
             log.error("Failed to send message to chat {}", chatId, e);
             return null;
+        }
+    }
+
+    /**
+     * Show a transient status indicator in the chat ("typing…" / "sending file…") while the bot works.
+     * Telegram clears it after a few seconds or when the next message is sent. Best-effort — cosmetic,
+     * so failures are ignored.
+     */
+    public void sendChatAction(long chatId, String action) {
+        try {
+            telegramClient.execute(SendChatAction.builder().chatId(chatId).action(action).build());
+        } catch (TelegramApiException e) {
+            log.debug("Failed to send chat action to chat {}", chatId, e);
         }
     }
 
