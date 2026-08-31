@@ -21,6 +21,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
@@ -36,9 +37,11 @@ public class DocumentExtractionService {
     private static final Logger log = LoggerFactory.getLogger(DocumentExtractionService.class);
 
     private static final String PROMPT = """
-            Ты извлекаешь данные из фотографии документа (чек, договор, гарантия, свидетельство и т.п.).
-            Заполни поля по схеме. Если поля нет в документе — верни null. Даты — в формате ГГГГ-ММ-ДД.
-            Сумму верни числом без валюты (например 4559.00). В fullText помести весь распознанный текст.""";
+            Ты извлекаешь данные из фотографий ОДНОГО документа (это может быть несколько страниц одного
+            документа: чек, договор, гарантия, свидетельство и т.п.). Рассматривай все изображения как один
+            документ и заполни поля по схеме на основе всех страниц. Если поля нет — верни null. Даты — в
+            формате ГГГГ-ММ-ДД. Сумму верни числом без валюты (например 4559.00). В fullText помести весь
+            распознанный текст со всех страниц по порядку.""";
 
     private final AnthropicClient client;
     private final String model;
@@ -65,32 +68,45 @@ public class DocumentExtractionService {
         return client != null;
     }
 
-    /** Extract fields from a document image; empty if disabled or the bytes aren't a readable image. */
+    /** Extract fields from a single document image; empty if disabled or the bytes aren't a readable image. */
     public Optional<Extraction> extract(byte[] fileBytes) {
+        return extract(List.of(fileBytes));
+    }
+
+    /**
+     * Extract fields from the pages of one document (one or more photos) in a single request. Unreadable
+     * images are skipped; empty if disabled or none of the images are readable.
+     */
+    public Optional<Extraction> extract(List<byte[]> images) {
         if (client == null) {
             return Optional.empty();
         }
-        byte[] jpeg = toJpeg(fileBytes);
-        if (jpeg == null) {
+        List<ContentBlockParam> blocks = new ArrayList<>();
+        for (byte[] image : images) {
+            byte[] jpeg = toJpeg(image);
+            if (jpeg == null) {
+                continue;
+            }
+            String base64 = Base64.getEncoder().encodeToString(jpeg);
+            blocks.add(ContentBlockParam.ofImage(ImageBlockParam.builder()
+                    .source(Base64ImageSource.builder()
+                            .mediaType(Base64ImageSource.MediaType.IMAGE_JPEG)
+                            .data(base64)
+                            .build())
+                    .build()));
+        }
+        if (blocks.isEmpty()) {
             return Optional.empty();
         }
-        String base64 = Base64.getEncoder().encodeToString(jpeg);
+        blocks.add(ContentBlockParam.ofText(TextBlockParam.builder().text(PROMPT).build()));
 
-        ImageBlockParam image = ImageBlockParam.builder()
-                .source(Base64ImageSource.builder()
-                        .mediaType(Base64ImageSource.MediaType.IMAGE_JPEG)
-                        .data(base64)
-                        .build())
-                .build();
-        TextBlockParam prompt = TextBlockParam.builder().text(PROMPT).build();
-
+        // Scale the output budget with the page count so a long multi-page transcript isn't truncated.
+        long maxTokens = Math.max(4096L, Math.min(16384L, 2048L * blocks.size()));
         StructuredMessageCreateParams<ExtractedFields> params = MessageCreateParams.builder()
                 .model(model)
-                .maxTokens(4096L)
+                .maxTokens(maxTokens)
                 .outputConfig(ExtractedFields.class)
-                .addUserMessageOfBlockParams(List.of(
-                        ContentBlockParam.ofImage(image),
-                        ContentBlockParam.ofText(prompt)))
+                .addUserMessageOfBlockParams(blocks)
                 .build();
 
         try {

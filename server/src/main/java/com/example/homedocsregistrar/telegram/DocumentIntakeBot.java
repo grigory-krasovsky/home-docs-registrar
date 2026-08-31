@@ -14,6 +14,7 @@ import com.example.homedocsregistrar.intake.DocumentIntakeService.IncomingPage;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
 import com.example.homedocsregistrar.retrieval.DocumentRetrievalService;
 import com.example.homedocsregistrar.search.DocumentSearchService;
+import com.example.homedocsregistrar.telegram.MediaGroupCollector.BufferedPage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -28,6 +29,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -52,13 +54,15 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final ApiUsageTracker usageTracker;
     private final UsageEstimator usageEstimator;
     private final AccessService accessService;
+    private final MediaGroupCollector mediaGroupCollector;
     private final TelegramProperties telegram;
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
                              DocumentRetrievalService retrievalService, DocumentSearchService searchService,
                              ApiUsageTracker usageTracker, UsageEstimator usageEstimator,
-                             AccessService accessService, TelegramProperties telegram) {
+                             AccessService accessService, MediaGroupCollector mediaGroupCollector,
+                             TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
@@ -68,6 +72,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.usageTracker = usageTracker;
         this.usageEstimator = usageEstimator;
         this.accessService = accessService;
+        this.mediaGroupCollector = mediaGroupCollector;
         this.telegram = telegram;
     }
 
@@ -109,7 +114,19 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             }
 
             if (message.hasDocument()) {
-                handleDocument(chatId, message.getDocument().getFileId(), message.getDocument().getFileName());
+                String mediaGroupId = message.getMediaGroupId();
+                if (mediaGroupId != null) {
+                    // Part of an album (multi-page): buffer the pages and process them together.
+                    BufferedPage page = new BufferedPage(chatId, message.getDocument().getFileId(),
+                            message.getDocument().getFileName(), message.getMessageId());
+                    boolean first = mediaGroupCollector.add(mediaGroupId, page, this::handleDocumentGroup);
+                    if (first) {
+                        sender.send(chatId, "Получаю страницы документа, распознаю…");
+                        sender.sendChatAction(chatId, "typing");
+                    }
+                } else {
+                    handleDocument(chatId, message.getDocument().getFileId(), message.getDocument().getFileName());
+                }
             } else if (message.hasPhoto()) {
                 sender.send(chatId, "Пришлите документ как ФАЙЛ (вложение), а не как фото — "
                         + "иначе Telegram сожмёт изображение и пострадает распознавание.");
@@ -223,22 +240,60 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
             Extraction extraction = extractionService.extract(bytes).orElse(null);
             ExtractedFields fields = extraction == null ? null : extraction.fields();
-            IntakeResult result = intakeService.save(
-                    List.of(new IncomingPage(fileId, fileName, bytes)), fields);
-            if (result.duplicate()) {
-                sender.send(chatId, "Этот документ уже сохранён (id=" + result.document().getId() + ").");
-                return;
-            }
-
-            String text = summary(result.document(), fields);
-            if (extraction != null) {
-                text += "\n\n" + tokenStatus(extraction);
-            }
-            sender.send(chatId, text, openFileKeyboard(result.document().getId(), "📎 Открыть файл"));
+            IntakeResult result = intakeService.save(List.of(new IncomingPage(fileId, fileName, bytes)), fields);
+            replySaved(chatId, result, extraction);
         } catch (Exception e) {
             log.error("Intake failed for document {}", fileId, e);
             sender.send(chatId, "Не удалось обработать файл. Попробуйте ещё раз.");
         }
+    }
+
+    /** Process a buffered album as one multi-page document: download every page, extract, save. */
+    private void handleDocumentGroup(List<BufferedPage> bufferedPages) {
+        if (bufferedPages.isEmpty()) {
+            return;
+        }
+        long chatId = bufferedPages.get(0).chatId();
+        try {
+            List<IncomingPage> pages = new ArrayList<>();
+            List<byte[]> images = new ArrayList<>();
+            for (BufferedPage page : bufferedPages) {
+                byte[] bytes = fileService.download(page.fileId());
+                pages.add(new IncomingPage(page.fileId(), page.fileName(), bytes));
+                images.add(bytes);
+            }
+
+            // Dedupe by the whole-pack hash before the (paid) vision call.
+            Optional<Document> duplicate = intakeService.findExisting(images);
+            if (duplicate.isPresent()) {
+                sender.send(chatId, "Этот документ уже сохранён (id=" + duplicate.get().getId() + ").");
+                return;
+            }
+
+            Extraction extraction = extractionService.extract(images).orElse(null);
+            ExtractedFields fields = extraction == null ? null : extraction.fields();
+            IntakeResult result = intakeService.save(pages, fields);
+            replySaved(chatId, result, extraction);
+        } catch (Exception e) {
+            log.error("Group intake failed ({} pages)", bufferedPages.size(), e);
+            sender.send(chatId, "Не удалось обработать документ. Попробуйте ещё раз.");
+        }
+    }
+
+    /** Common reply after an intake: dedupe notice, or the saved summary + token status + open button. */
+    private void replySaved(long chatId, IntakeResult result, Extraction extraction) {
+        if (result.duplicate()) {
+            sender.send(chatId, "Этот документ уже сохранён (id=" + result.document().getId() + ").");
+            return;
+        }
+        ExtractedFields fields = extraction == null ? null : extraction.fields();
+        String text = summary(result.document(), fields);
+        if (extraction != null) {
+            text += "\n\n" + tokenStatus(extraction);
+        }
+        int pageCount = result.document().getPageCount();
+        String buttonLabel = pageCount > 1 ? "📎 Открыть (" + pageCount + " стр.)" : "📎 Открыть файл";
+        sender.send(chatId, text, openFileKeyboard(result.document().getId(), buttonLabel));
     }
 
     private void handleText(long chatId, String text) {

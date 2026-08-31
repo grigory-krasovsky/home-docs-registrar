@@ -21,6 +21,8 @@ telegram:
   # Blank when unset -> the bot is disabled but the app still boots (see TelegramBotConfig).
   bot-token: ${TELEGRAM_BOT_TOKEN:}
   archive-channel-id: ${ARCHIVE_CHANNEL_ID:}
+  # How long to wait (ms) after the last album page before treating a multi-page album as complete.
+  media-group-debounce-ms: ${TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS:1500}
 
 anthropic:
   # Vision extraction. Blank key -> the service is disabled and the app still boots (tests/no-key runs).
