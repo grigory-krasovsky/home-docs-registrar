@@ -37,6 +37,8 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       ARCHIVE_CHANNEL_ID: ${ARCHIVE_CHANNEL_ID:-}
       AGENT_TOKEN: ${AGENT_TOKEN:-}
+      # Vision extraction (Claude). Blank -> extraction disabled, the app still runs.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports:
       # Localhost only; this VPS is shared (8080 is taken by another service), so default to 8081.
       # Override with SERVER_HTTP_PORT in .env if needed. Put a TLS reverse proxy in front for the

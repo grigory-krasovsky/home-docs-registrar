@@ -14,7 +14,7 @@
 
     <properties>
         <telegrambots.version>9.0.0</telegrambots.version>
-        <tess4j.version>5.13.0</tess4j.version>
+        <anthropic-java.version>2.34.0</anthropic-java.version>
     </properties>
 
     <dependencies>
@@ -40,11 +40,12 @@
             <version>${telegrambots.version}</version>
         </dependency>
 
-        <!-- OCR: Tess4J wraps native Tesseract, which is installed in the Docker image runtime stage. -->
+        <!-- Vision extraction: official Anthropic SDK (Claude Haiku 4.5) reads the document image and
+             returns structured fields. Will replace the local Tesseract/ImageMagick OCR path. -->
         <dependency>
-            <groupId>net.sourceforge.tess4j</groupId>
-            <artifactId>tess4j</artifactId>
-            <version>${tess4j.version}</version>
+            <groupId>com.anthropic</groupId>
+            <artifactId>anthropic-java</artifactId>
+            <version>${anthropic-java.version}</version>
         </dependency>
 
         <dependency>

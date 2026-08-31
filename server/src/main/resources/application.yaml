@@ -17,10 +17,7 @@ telegram:
   bot-token: ${TELEGRAM_BOT_TOKEN:}
   archive-channel-id: ${ARCHIVE_CHANNEL_ID:}
 
-ocr:
-  # Tesseract language data path inside the Docker image.
-  data-path: ${TESSDATA_PATH:/usr/share/tesseract-ocr/5/tessdata}
-  # rus+eng: documents mix Cyrillic and Latin (emails, model numbers), which reduces misreads.
-  language: ${OCR_LANGUAGE:rus+eng}
-  # Tesseract page segmentation mode (3 = automatic).
-  page-seg-mode: ${OCR_PSM:3}
+anthropic:
+  # Vision extraction. Blank key -> the service is disabled and the app still boots (tests/no-key runs).
+  api-key: ${ANTHROPIC_API_KEY:}
+  model: ${ANTHROPIC_MODEL:claude-haiku-4-5}

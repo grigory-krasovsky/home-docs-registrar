@@ -46,6 +46,9 @@ public class Document {
     @Column(name = "doc_type")
     private String docType;
 
+    @Column(name = "document_number")
+    private String documentNumber;
+
     private String counterparty;
 
     @Column(name = "doc_date")
@@ -121,6 +124,14 @@ public class Document {
 
     public void setDocType(String docType) {
         this.docType = docType;
+    }
+
+    public String getDocumentNumber() {
+        return documentNumber;
+    }
+
+    public void setDocumentNumber(String documentNumber) {
+        this.documentNumber = documentNumber;
     }
 
     public String getCounterparty() {

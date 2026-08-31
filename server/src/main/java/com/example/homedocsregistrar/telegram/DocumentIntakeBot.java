@@ -1,8 +1,10 @@
 package com.example.homedocsregistrar.telegram;
 
+import com.example.homedocsregistrar.domain.Document;
+import com.example.homedocsregistrar.extraction.DocumentExtractionService;
+import com.example.homedocsregistrar.extraction.ExtractedFields;
 import com.example.homedocsregistrar.intake.DocumentIntakeService;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
-import com.example.homedocsregistrar.ocr.OcrService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -10,31 +12,32 @@ import org.telegram.telegrambots.longpolling.util.LongPollingSingleThreadUpdateC
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.message.Message;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+
 /**
- * Receives Telegram updates (long polling) and drives the document-intake dialog.
- *
- * <p>Current behaviour: a document sent as a file is downloaded, OCR'd, archived to the private
- * channel and saved to the registry. Field confirmation and section selection come next. While the
- * archive channel id is unknown, channel posts are logged so the operator can capture
- * {@code ARCHIVE_CHANNEL_ID}.
+ * Receives Telegram updates (long polling) and drives document intake: a document sent as a file is
+ * downloaded, read by the vision model (fields + full text), archived to the private channel and
+ * saved. While the archive channel id is unknown, channel posts are logged so the operator can
+ * capture {@code ARCHIVE_CHANNEL_ID}.
  */
 @Component
 public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIntakeBot.class);
-    private static final int MAX_SNIPPET = 1500;
 
     private final TelegramSender sender;
     private final TelegramFileService fileService;
-    private final OcrService ocrService;
+    private final DocumentExtractionService extractionService;
     private final DocumentIntakeService intakeService;
     private final TelegramProperties telegram;
 
-    public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService, OcrService ocrService,
-                             DocumentIntakeService intakeService, TelegramProperties telegram) {
+    public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
+                             DocumentExtractionService extractionService, DocumentIntakeService intakeService,
+                             TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
-        this.ocrService = ocrService;
+        this.extractionService = extractionService;
         this.intakeService = intakeService;
         this.telegram = telegram;
     }
@@ -58,7 +61,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 sender.send(chatId, "Пришлите документ как ФАЙЛ (вложение), а не как фото — "
                         + "иначе Telegram сожмёт изображение и пострадает распознавание.");
             } else if (message.hasText()) {
-                sender.send(chatId, "Привет! Пришлите документ как файл (вложение), и я его зарегистрирую.");
+                sender.send(chatId, "Привет! Пришлите документ как файл (вложение), и я его распознаю.");
             }
         } catch (Exception e) {
             log.error("Failed to handle update", e);
@@ -66,26 +69,44 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     }
 
     private void handleDocument(long chatId, String fileId, String fileName) {
-        sender.send(chatId, "Файл получен, обрабатываю…");
+        sender.send(chatId, "Файл получен, распознаю…");
         try {
             byte[] bytes = fileService.download(fileId);
-            String text = ocrService.ocr(bytes);
-            IntakeResult result = intakeService.save(fileId, fileName, bytes, text);
+            ExtractedFields fields = extractionService.extract(bytes).orElse(null);
+            IntakeResult result = intakeService.save(fileId, fileName, bytes, fields);
             if (result.duplicate()) {
                 sender.send(chatId, "Этот документ уже сохранён (id=" + result.document().getId() + ").");
                 return;
             }
-            StringBuilder reply = new StringBuilder("Сохранено ✅ id=").append(result.document().getId());
-            if (text.isBlank()) {
-                reply.append("\n\n(текст не распознан — возможно PDF или нечёткое фото)");
-            } else {
-                String snippet = text.length() > MAX_SNIPPET ? text.substring(0, MAX_SNIPPET) + "…" : text;
-                reply.append("\n\nРаспознано:\n").append(snippet);
-            }
-            sender.send(chatId, reply.toString());
+            sender.send(chatId, summary(result.document(), fields));
         } catch (Exception e) {
             log.error("Intake failed for document {}", fileId, e);
             sender.send(chatId, "Не удалось обработать файл. Попробуйте ещё раз.");
+        }
+    }
+
+    private String summary(Document document, ExtractedFields fields) {
+        StringBuilder text = new StringBuilder("Сохранено ✅ id=").append(document.getId());
+        if (fields == null) {
+            text.append("\n\n(распознавание недоступно — файл сохранён)");
+            return text.toString();
+        }
+        append(text, "Тип", document.getDocType());
+        append(text, "Название", document.getTitle());
+        append(text, "Контрагент", document.getCounterparty());
+        LocalDate docDate = document.getDocDate();
+        append(text, "Дата", docDate == null ? null : docDate.toString());
+        append(text, "№", document.getDocumentNumber());
+        BigDecimal amount = document.getAmount();
+        append(text, "Сумма", amount == null ? null : amount.toPlainString());
+        LocalDate warrantyUntil = document.getWarrantyUntil();
+        append(text, "Гарантия до", warrantyUntil == null ? null : warrantyUntil.toString());
+        return text.toString();
+    }
+
+    private void append(StringBuilder text, String label, String value) {
+        if (value != null && !value.isBlank()) {
+            text.append('\n').append(label).append(": ").append(value);
         }
     }
 
