@@ -55,11 +55,13 @@
         </dependency>
 
         <!-- Flyway owns the Postgres schema: a baseline (V1) plus the FTS migration (V2 = generated
-             tsvector column + GIN index). Disabled for the H2 tests (Postgres-specific SQL) — there
-             Hibernate builds the schema. flyway-database-postgresql is required for Postgres. -->
+             tsvector column + GIN index). The STARTER is required — in Spring Boot 4 the Flyway
+             auto-configuration lives in the spring-boot-flyway module (raw flyway-core alone does NOT
+             auto-run migrations). flyway-database-postgresql is needed for Postgres. Disabled for the
+             H2 tests (Postgres-specific SQL) — there Hibernate builds the schema. -->
         <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
