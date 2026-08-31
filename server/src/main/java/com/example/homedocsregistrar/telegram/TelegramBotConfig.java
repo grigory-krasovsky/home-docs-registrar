@@ -10,9 +10,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.telegram.telegrambots.client.okhttp.OkHttpTelegramClient;
 import org.telegram.telegrambots.longpolling.TelegramBotsLongPollingApplication;
+import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
+import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
+import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.meta.generics.TelegramClient;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * Wires the Telegram long-polling bot using the plain telegrambots libraries (no Spring starter),
@@ -41,7 +45,8 @@ public class TelegramBotConfig {
 
     @Bean
     public ApplicationRunner telegramBotRegistrar(TelegramBotsLongPollingApplication botsApplication,
-                                                  TelegramProperties properties, DocumentIntakeBot bot) {
+                                                  TelegramProperties properties, DocumentIntakeBot bot,
+                                                  TelegramClient telegramClient) {
         return args -> {
             if (properties.botToken() == null || properties.botToken().isBlank()) {
                 log.warn("TELEGRAM_BOT_TOKEN is not set - the Telegram bot is disabled");
@@ -50,11 +55,27 @@ public class TelegramBotConfig {
             try {
                 botsApplication.registerBot(properties.botToken(), bot);
                 log.info("Telegram bot registered, long polling started");
+                registerCommandMenu(telegramClient);
             } catch (Exception e) {
                 log.error("Telegram bot registration failed - the app keeps running, but the bot is DOWN. "
                         + "Check network access to api.telegram.org from this environment.", e);
             }
         };
+    }
+
+    /** Publish the bot's command menu (the "/" button in Telegram); best-effort, never fatal. */
+    private void registerCommandMenu(TelegramClient telegramClient) {
+        try {
+            telegramClient.execute(SetMyCommands.builder()
+                    .commands(List.of(BotCommand.builder()
+                            .command("tokens")
+                            .description("Израсходовано токенов на распознавание")
+                            .build()))
+                    .build());
+            log.info("Telegram command menu set (/tokens)");
+        } catch (TelegramApiException e) {
+            log.warn("Failed to set the Telegram command menu", e);
+        }
     }
 
     /** Read timeout must exceed the long-polling getUpdates timeout (~50 s). */

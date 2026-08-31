@@ -64,6 +64,11 @@ public class DocumentExtractionService {
             }
             this.client = builder.build();
         }
+        if (this.client == null) {
+            log.warn("ANTHROPIC_API_KEY is not set - vision extraction is disabled");
+        } else {
+            log.info("Vision extraction enabled (model={})", model);
+        }
     }
 
     public boolean isEnabled() {
