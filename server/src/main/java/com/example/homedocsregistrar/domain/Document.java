@@ -1,5 +1,6 @@
 package com.example.homedocsregistrar.domain;
 
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -11,11 +12,15 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A registered document. Text/metadata are the source of truth on the VPS; the file itself lives on
@@ -69,25 +74,18 @@ public class Document {
     @JoinColumn(name = "section_id")
     private CatalogSection section;
 
-    // --- file on Telegram (primary store) ---
+    // --- files on Telegram (primary store): one page per source photo ---
 
-    /** Telegram {@code file_id} of the archived document; the handle used to re-send / download it. */
-    @Column(name = "telegram_file_id")
-    private String telegramFileId;
-
-    /** Message id of the document inside the private archive channel. */
-    @Column(name = "channel_message_id")
-    private Long channelMessageId;
-
-    /** SHA-256 of the file bytes; stable key for idempotent backup. */
+    /** SHA-256 of the whole pack (all pages in order); stable key for dedupe. */
     @Column(name = "content_hash", length = 64)
     private String contentHash;
 
-    @Column(name = "file_size_bytes")
-    private Long fileSizeBytes;
+    @Column(name = "page_count", nullable = false)
+    private int pageCount = 1;
 
-    @Column(name = "original_filename")
-    private String originalFilename;
+    @OneToMany(mappedBy = "document", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("pageNumber")
+    private List<DocumentPage> pages = new ArrayList<>();
 
     // --- backup state ---
 
@@ -182,22 +180,6 @@ public class Document {
         this.section = section;
     }
 
-    public String getTelegramFileId() {
-        return telegramFileId;
-    }
-
-    public void setTelegramFileId(String telegramFileId) {
-        this.telegramFileId = telegramFileId;
-    }
-
-    public Long getChannelMessageId() {
-        return channelMessageId;
-    }
-
-    public void setChannelMessageId(Long channelMessageId) {
-        this.channelMessageId = channelMessageId;
-    }
-
     public String getContentHash() {
         return contentHash;
     }
@@ -206,20 +188,22 @@ public class Document {
         this.contentHash = contentHash;
     }
 
-    public Long getFileSizeBytes() {
-        return fileSizeBytes;
+    public int getPageCount() {
+        return pageCount;
     }
 
-    public void setFileSizeBytes(Long fileSizeBytes) {
-        this.fileSizeBytes = fileSizeBytes;
+    public void setPageCount(int pageCount) {
+        this.pageCount = pageCount;
     }
 
-    public String getOriginalFilename() {
-        return originalFilename;
+    public List<DocumentPage> getPages() {
+        return pages;
     }
 
-    public void setOriginalFilename(String originalFilename) {
-        this.originalFilename = originalFilename;
+    /** Attach a page and keep both sides of the relationship consistent. */
+    public void addPage(DocumentPage page) {
+        page.setDocument(this);
+        pages.add(page);
     }
 
     public BackupStatus getBackupStatus() {

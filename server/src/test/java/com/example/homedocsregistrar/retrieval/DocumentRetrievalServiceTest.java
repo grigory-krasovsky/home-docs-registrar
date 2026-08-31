@@ -1,6 +1,7 @@
 package com.example.homedocsregistrar.retrieval;
 
 import com.example.homedocsregistrar.domain.Document;
+import com.example.homedocsregistrar.domain.DocumentPage;
 import com.example.homedocsregistrar.repository.DocumentRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,15 +21,15 @@ class DocumentRetrievalServiceTest {
     private DocumentRepository documents;
 
     @Test
-    void findsStoredDocumentByIdAndResolvesItsFileId() {
+    void findsStoredDocumentByIdAndResolvesItsPageFileId() {
         Document document = new Document();
-        document.setTelegramFileId("FILE_ID_123");
         document.setDocType("чек");
+        document.addPage(new DocumentPage(1, "FILE_ID_123", null, "hash", 10L, "scan.jpg"));
         Document saved = documents.save(document);
 
         assertThat(retrieval.byId(saved.getId()))
                 .get()
-                .extracting(Document::getTelegramFileId)
+                .extracting(d -> d.getPages().get(0).getTelegramFileId())
                 .isEqualTo("FILE_ID_123");
     }
 

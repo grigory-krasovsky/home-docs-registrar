@@ -1,6 +1,7 @@
 package com.example.homedocsregistrar.intake;
 
 import com.example.homedocsregistrar.domain.Document;
+import com.example.homedocsregistrar.domain.DocumentPage;
 import com.example.homedocsregistrar.extraction.ExtractedFields;
 import com.example.homedocsregistrar.repository.DocumentRepository;
 import com.example.homedocsregistrar.telegram.TelegramProperties;
@@ -13,6 +14,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -37,26 +39,28 @@ public class DocumentIntakeService {
      * Look up an already-stored document with the same content, so callers can skip re-processing
      * (e.g. the vision API call) for a duplicate. {@link #save} re-checks this to stay idempotent.
      */
-    public Optional<Document> findExisting(byte[] fileBytes) {
-        return documents.findByContentHash(sha256(fileBytes));
+    public Optional<Document> findExisting(List<byte[]> pageBytes) {
+        return documents.findByContentHash(packHash(pageBytes));
     }
 
-    public IntakeResult save(String fileId, String fileName, byte[] fileBytes, ExtractedFields fields) {
-        String hash = sha256(fileBytes);
+    /** Save one logical document from its ordered pages (one per source photo) and extracted fields. */
+    public IntakeResult save(List<IncomingPage> pages, ExtractedFields fields) {
+        String hash = packHash(pages.stream().map(IncomingPage::bytes).toList());
         Optional<Document> existing = documents.findByContentHash(hash);
         if (existing.isPresent()) {
             return new IntakeResult(existing.get(), true);
         }
 
-        Long channelMessageId = archiveToChannel(fileId, fileName);
-
         Document document = new Document();
         applyFields(document, fields);
-        document.setTelegramFileId(fileId);
-        document.setChannelMessageId(channelMessageId);
         document.setContentHash(hash);
-        document.setFileSizeBytes((long) fileBytes.length);
-        document.setOriginalFilename(fileName);
+        document.setPageCount(pages.size());
+        int pageNumber = 1;
+        for (IncomingPage page : pages) {
+            Long channelMessageId = archiveToChannel(page.fileId(), page.fileName());
+            document.addPage(new DocumentPage(pageNumber++, page.fileId(), channelMessageId,
+                    sha256(page.bytes()), (long) page.bytes().length, page.fileName()));
+        }
         documents.save(document);
         return new IntakeResult(document, false);
     }
@@ -118,6 +122,23 @@ public class DocumentIntakeService {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 not available", e);
         }
+    }
+
+    /** SHA-256 over all pages' bytes in order — the stable key identifying the whole pack. */
+    private static String packHash(List<byte[]> pages) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (byte[] page : pages) {
+                digest.update(page);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    /** One incoming page (source photo): its Telegram file id, filename, and downloaded bytes. */
+    public record IncomingPage(String fileId, String fileName, byte[] bytes) {
     }
 
     /** Outcome of an intake attempt. {@code duplicate} means the document already existed (same hash). */

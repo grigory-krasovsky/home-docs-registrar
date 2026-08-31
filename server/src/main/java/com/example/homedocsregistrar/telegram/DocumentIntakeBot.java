@@ -3,12 +3,14 @@ package com.example.homedocsregistrar.telegram;
 import com.example.homedocsregistrar.access.AccessService;
 import com.example.homedocsregistrar.domain.AllowedUser;
 import com.example.homedocsregistrar.domain.Document;
+import com.example.homedocsregistrar.domain.DocumentPage;
 import com.example.homedocsregistrar.extraction.ApiUsageTracker;
 import com.example.homedocsregistrar.extraction.DocumentExtractionService;
 import com.example.homedocsregistrar.extraction.ExtractedFields;
 import com.example.homedocsregistrar.extraction.Extraction;
 import com.example.homedocsregistrar.extraction.UsageEstimator;
 import com.example.homedocsregistrar.intake.DocumentIntakeService;
+import com.example.homedocsregistrar.intake.DocumentIntakeService.IncomingPage;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
 import com.example.homedocsregistrar.retrieval.DocumentRetrievalService;
 import com.example.homedocsregistrar.search.DocumentSearchService;
@@ -212,7 +214,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             byte[] bytes = fileService.download(fileId);
 
             // Dedupe by content hash before the (paid) vision call so re-sends cost nothing.
-            Optional<Document> duplicate = intakeService.findExisting(bytes);
+            Optional<Document> duplicate = intakeService.findExisting(List.of(bytes));
             if (duplicate.isPresent()) {
                 sender.send(chatId, "Этот документ уже сохранён (id=" + duplicate.get().getId() + ").");
                 return;
@@ -220,7 +222,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
             Extraction extraction = extractionService.extract(bytes).orElse(null);
             ExtractedFields fields = extraction == null ? null : extraction.fields();
-            IntakeResult result = intakeService.save(fileId, fileName, bytes, fields);
+            IntakeResult result = intakeService.save(
+                    List.of(new IncomingPage(fileId, fileName, bytes)), fields);
             if (result.duplicate()) {
                 sender.send(chatId, "Этот документ уже сохранён (id=" + result.document().getId() + ").");
                 return;
@@ -354,18 +357,24 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         sender.answerCallback(callback.getId(), error);
     }
 
-    /** Send document {@code id}'s file to the chat; returns an error message, or null on success. */
+    /** Send every page of document {@code id} to the chat; returns an error message, or null on success. */
     private String sendDocumentFile(long chatId, long id) {
         Document document = retrievalService.byId(id).orElse(null);
         if (document == null) {
             return "Документ id=" + id + " не найден.";
         }
-        String fileId = document.getTelegramFileId();
-        if (fileId == null || fileId.isBlank()) {
-            return "Для документа id=" + id + " не сохранён файл.";
+        List<DocumentPage> pages = document.getPages();
+        boolean anySent = false;
+        for (DocumentPage page : pages) {
+            String fileId = page.getTelegramFileId();
+            if (fileId == null || fileId.isBlank()) {
+                continue;
+            }
+            Integer sent = sender.sendDocumentByFileId(
+                    String.valueOf(chatId), fileId, pageCaption(document, page));
+            anySent |= sent != null;
         }
-        Integer sent = sender.sendDocumentByFileId(String.valueOf(chatId), fileId, retrievalCaption(document));
-        return sent == null ? "Не удалось отправить файл документа id=" + id + ". Попробуйте позже." : null;
+        return anySent ? null : "Для документа id=" + id + " не удалось отправить файлы. Попробуйте позже.";
     }
 
     /** A one-button inline keyboard that opens document {@code id}'s file. */
@@ -405,14 +414,17 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
     }
 
-    /** Short caption for a re-sent file: id + type + title when known. */
-    private String retrievalCaption(Document document) {
+    /** Caption for a re-sent page: id + type + title, plus the page number when the document is multi-page. */
+    private String pageCaption(Document document, DocumentPage page) {
         StringBuilder caption = new StringBuilder("id=").append(document.getId());
         if (document.getDocType() != null && !document.getDocType().isBlank()) {
             caption.append(" · ").append(document.getDocType());
         }
         if (document.getTitle() != null && !document.getTitle().isBlank()) {
             caption.append(" · ").append(document.getTitle());
+        }
+        if (document.getPageCount() > 1) {
+            caption.append(" · стр. ").append(page.getPageNumber()).append('/').append(document.getPageCount());
         }
         return caption.toString();
     }

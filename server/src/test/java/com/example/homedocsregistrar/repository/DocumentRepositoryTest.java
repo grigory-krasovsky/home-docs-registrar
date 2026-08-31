@@ -30,7 +30,6 @@ class DocumentRepositoryTest {
         Document doc = new Document();
         doc.setTitle("Договор аренды");
         doc.setOcrText("образец текста договора");
-        doc.setTelegramFileId("FILEID123");
         doc.setContentHash("abc123");
         doc.setSection(section);
         documents.save(doc);

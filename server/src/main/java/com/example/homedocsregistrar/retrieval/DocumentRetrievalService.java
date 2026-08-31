@@ -3,6 +3,7 @@ package com.example.homedocsregistrar.retrieval;
 import com.example.homedocsregistrar.domain.Document;
 import com.example.homedocsregistrar.repository.DocumentRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
 
@@ -20,8 +21,9 @@ public class DocumentRetrievalService {
         this.documents = documents;
     }
 
-    /** Look up a document by its registry id. */
+    /** Look up a document (with its pages) by its registry id, so a caller can send every page's file. */
+    @Transactional(readOnly = true)
     public Optional<Document> byId(long id) {
-        return documents.findById(id);
+        return documents.findWithPagesById(id);
     }
 }
