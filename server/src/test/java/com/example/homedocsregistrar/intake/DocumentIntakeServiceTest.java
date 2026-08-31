@@ -31,7 +31,7 @@ class DocumentIntakeServiceTest {
     void savesExtractedFieldsThenDeduplicatesByContentHash() {
         byte[] bytes = "file-content".getBytes(StandardCharsets.UTF_8);
         ExtractedFields fields = new ExtractedFields(
-                "чек", "Товарный чек", "ООО \"Ромашка\"",
+                true, "чек", "Товарный чек", "ООО \"Ромашка\"",
                 "2026-08-10", "75485", "4559.00", null, "распознанный текст");
 
         IntakeResult first = intake.save(List.of(new IncomingPage("FILE1", "scan.jpg", bytes)), fields);

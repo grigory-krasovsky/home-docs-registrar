@@ -240,6 +240,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
             Extraction extraction = extractionService.extract(bytes).orElse(null);
             ExtractedFields fields = extraction == null ? null : extraction.fields();
+            if (!looksLikeDocument(fields)) {
+                sender.send(chatId, notADocumentMessage());
+                return;
+            }
             IntakeResult result = intakeService.save(List.of(new IncomingPage(fileId, fileName, bytes)), fields);
             replySaved(chatId, result, extraction);
         } catch (Exception e) {
@@ -272,12 +276,36 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
             Extraction extraction = extractionService.extract(images).orElse(null);
             ExtractedFields fields = extraction == null ? null : extraction.fields();
+            if (!looksLikeDocument(fields)) {
+                sender.send(chatId, notADocumentMessage());
+                return;
+            }
             IntakeResult result = intakeService.save(pages, fields);
             replySaved(chatId, result, extraction);
         } catch (Exception e) {
             log.error("Group intake failed ({} pages)", bufferedPages.size(), e);
             sender.send(chatId, "Не удалось обработать документ. Попробуйте ещё раз.");
         }
+    }
+
+    /**
+     * Accept only things that look like a document. When extraction ran, trust the model's own verdict
+     * (isDocument) and require some recognized text. When extraction is off/failed (fields == null) we
+     * can't judge, so we keep the file rather than drop it.
+     */
+    private static boolean looksLikeDocument(ExtractedFields fields) {
+        if (fields == null) {
+            return true;
+        }
+        if (Boolean.FALSE.equals(fields.isDocument())) {
+            return false;
+        }
+        return fields.fullText() != null && !fields.fullText().isBlank();
+    }
+
+    private static String notADocumentMessage() {
+        return "Это не похоже на документ — я не вижу в нём текста. "
+                + "Пришлите фотографию документа: чек, договор, гарантию, свидетельство и т.п.";
     }
 
     /** Common reply after an intake: dedupe notice, or the saved summary + token status + open button. */

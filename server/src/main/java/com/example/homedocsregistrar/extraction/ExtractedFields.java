@@ -9,6 +9,11 @@ import com.fasterxml.jackson.annotation.JsonPropertyDescription;
  */
 public record ExtractedFields(
 
+        @JsonPropertyDescription("true если на фото бумажный документ (чек, договор, гарантия, "
+                + "свидетельство, счёт, акт и т.п.); false если это НЕ документ (человек, пейзаж, "
+                + "предмет, животное, скриншот и т.п.)")
+        Boolean isDocument,
+
         @JsonPropertyDescription("Document type in Russian, e.g. чек, договор, гарантия, свидетельство, счёт, акт")
         String docType,
 
