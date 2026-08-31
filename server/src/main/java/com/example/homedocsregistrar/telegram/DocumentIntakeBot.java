@@ -8,6 +8,7 @@ import com.example.homedocsregistrar.extraction.Extraction;
 import com.example.homedocsregistrar.extraction.UsageEstimator;
 import com.example.homedocsregistrar.intake.DocumentIntakeService;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
+import com.example.homedocsregistrar.retrieval.DocumentRetrievalService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -35,18 +36,20 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final TelegramFileService fileService;
     private final DocumentExtractionService extractionService;
     private final DocumentIntakeService intakeService;
+    private final DocumentRetrievalService retrievalService;
     private final ApiUsageTracker usageTracker;
     private final UsageEstimator usageEstimator;
     private final TelegramProperties telegram;
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
-                             ApiUsageTracker usageTracker, UsageEstimator usageEstimator,
-                             TelegramProperties telegram) {
+                             DocumentRetrievalService retrievalService, ApiUsageTracker usageTracker,
+                             UsageEstimator usageEstimator, TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
         this.intakeService = intakeService;
+        this.retrievalService = retrievalService;
         this.usageTracker = usageTracker;
         this.usageEstimator = usageEstimator;
         this.telegram = telegram;
@@ -99,6 +102,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             }
 
             String text = summary(result.document(), fields);
+            text += "\n\nФайл прислать: /get " + result.document().getId();
             if (extraction != null) {
                 text += "\n\n" + tokenStatus(extraction);
             }
@@ -110,13 +114,65 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     }
 
     private void handleText(long chatId, String text) {
-        String command = text.strip().toLowerCase(Locale.ROOT);
+        String trimmed = text.strip();
+        String command = trimmed.toLowerCase(Locale.ROOT);
         if (command.startsWith("/tokens") || command.startsWith("/usage")) {
             sender.send(chatId, tokensSummary());
+        } else if (command.startsWith("/get") || command.startsWith("/doc")) {
+            handleGet(chatId, trimmed);
         } else {
             sender.send(chatId, "Привет! Пришлите документ как файл (вложение), и я его распознаю.\n"
-                    + "Команда /tokens — сколько токенов израсходовано на распознавание.");
+                    + "• /get <id> — прислать сохранённый файл документа\n"
+                    + "• /tokens — сколько токенов израсходовано на распознавание");
         }
+    }
+
+    /** Re-send a stored document's file from Telegram by its registry id (resolved to its file_id). */
+    private void handleGet(long chatId, String text) {
+        Long id = parseDocId(text);
+        if (id == null) {
+            sender.send(chatId, "Укажите номер документа, например: /get 42");
+            return;
+        }
+        Document document = retrievalService.byId(id).orElse(null);
+        if (document == null) {
+            sender.send(chatId, "Документ id=" + id + " не найден.");
+            return;
+        }
+        String fileId = document.getTelegramFileId();
+        if (fileId == null || fileId.isBlank()) {
+            sender.send(chatId, "Для документа id=" + id + " не сохранён файл.");
+            return;
+        }
+        Integer sent = sender.sendDocumentByFileId(String.valueOf(chatId), fileId, retrievalCaption(document));
+        if (sent == null) {
+            sender.send(chatId, "Не удалось отправить файл документа id=" + id + ". Попробуйте позже.");
+        }
+    }
+
+    /** Parse the document id from a "/get 42" (or "/doc 42") command; null if absent or not a number. */
+    private static Long parseDocId(String text) {
+        String[] parts = text.trim().split("\\s+");
+        if (parts.length < 2) {
+            return null;
+        }
+        try {
+            return Long.parseLong(parts[1]);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** Short caption for a re-sent file: id + type + title when known. */
+    private String retrievalCaption(Document document) {
+        StringBuilder caption = new StringBuilder("id=").append(document.getId());
+        if (document.getDocType() != null && !document.getDocType().isBlank()) {
+            caption.append(" · ").append(document.getDocType());
+        }
+        if (document.getTitle() != null && !document.getTitle().isBlank()) {
+            caption.append(" · ").append(document.getTitle());
+        }
+        return caption.toString();
     }
 
     private String summary(Document document, ExtractedFields fields) {

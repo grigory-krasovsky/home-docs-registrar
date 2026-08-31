@@ -67,12 +67,17 @@ public class TelegramBotConfig {
     private void registerCommandMenu(TelegramClient telegramClient) {
         try {
             telegramClient.execute(SetMyCommands.builder()
-                    .commands(List.of(BotCommand.builder()
-                            .command("tokens")
-                            .description("Израсходовано токенов на распознавание")
-                            .build()))
+                    .commands(List.of(
+                            BotCommand.builder()
+                                    .command("get")
+                                    .description("Прислать файл документа по номеру: /get <id>")
+                                    .build(),
+                            BotCommand.builder()
+                                    .command("tokens")
+                                    .description("Израсходовано токенов на распознавание")
+                                    .build()))
                     .build());
-            log.info("Telegram command menu set (/tokens)");
+            log.info("Telegram command menu set (/get, /tokens)");
         } catch (TelegramApiException e) {
             log.warn("Failed to set the Telegram command menu", e);
         }
