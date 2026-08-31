@@ -33,6 +33,14 @@ public class DocumentIntakeService {
         this.telegram = telegram;
     }
 
+    /**
+     * Look up an already-stored document with the same content, so callers can skip re-processing
+     * (e.g. the vision API call) for a duplicate. {@link #save} re-checks this to stay idempotent.
+     */
+    public Optional<Document> findExisting(byte[] fileBytes) {
+        return documents.findByContentHash(sha256(fileBytes));
+    }
+
     public IntakeResult save(String fileId, String fileName, byte[] fileBytes, ExtractedFields fields) {
         String hash = sha256(fileBytes);
         Optional<Document> existing = documents.findByContentHash(hash);

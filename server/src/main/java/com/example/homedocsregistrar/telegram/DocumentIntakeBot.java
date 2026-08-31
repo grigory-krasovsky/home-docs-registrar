@@ -14,6 +14,7 @@ import org.telegram.telegrambots.meta.api.objects.message.Message;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Optional;
 
 /**
  * Receives Telegram updates (long polling) and drives document intake: a document sent as a file is
@@ -72,6 +73,14 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         sender.send(chatId, "Файл получен, распознаю…");
         try {
             byte[] bytes = fileService.download(fileId);
+
+            // Dedupe by content hash before the (paid) vision call so re-sends cost nothing.
+            Optional<Document> duplicate = intakeService.findExisting(bytes);
+            if (duplicate.isPresent()) {
+                sender.send(chatId, "Этот документ уже сохранён (id=" + duplicate.get().getId() + ").");
+                return;
+            }
+
             ExtractedFields fields = extractionService.extract(bytes).orElse(null);
             IntakeResult result = intakeService.save(fileId, fileName, bytes, fields);
             if (result.duplicate()) {
