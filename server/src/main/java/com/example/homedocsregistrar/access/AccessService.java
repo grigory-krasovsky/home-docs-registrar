@@ -38,19 +38,6 @@ public class AccessService {
         return users.findByAdminTrue();
     }
 
-    /**
-     * Bootstrap: make this user the admin, but only while no admin exists yet (so it can't be hijacked
-     * once claimed). Returns true if this call claimed ownership.
-     */
-    @Transactional
-    public boolean claim(Long userId, String displayName) {
-        if (userId == null || users.existsByAdminTrue()) {
-            return false;
-        }
-        users.save(new AllowedUser(userId, true, displayName));
-        return true;
-    }
-
     /** Grant a regular user access (idempotent); returns false if they already had access. */
     @Transactional
     public boolean approve(Long userId, String displayName) {

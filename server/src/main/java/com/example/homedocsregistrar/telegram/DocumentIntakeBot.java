@@ -89,15 +89,11 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             Long fromId = userId(from);
 
             // Access-management commands are answered BEFORE the allow-list check, so a new user can
-            // bootstrap (/claim) or request access (/register), and anyone can look up their id.
+            // request access (/register) and anyone can look up their id (/whoami).
             if (message.hasText()) {
                 String command = message.getText().strip().toLowerCase(Locale.ROOT);
                 if (command.startsWith("/whoami")) {
                     sender.send(chatId, "Ваш Telegram ID: " + fromId);
-                    return;
-                }
-                if (command.startsWith("/claim")) {
-                    handleClaim(chatId, fromId, displayName(from));
                     return;
                 }
                 if (command.startsWith("/register")) {
@@ -134,15 +130,6 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             return;
         }
         handleCallback(callback);
-    }
-
-    /** /claim: the first user to run it becomes the admin; it does nothing once an admin exists. */
-    private void handleClaim(long chatId, Long userId, String displayName) {
-        if (accessService.claim(userId, displayName)) {
-            sender.send(chatId, "Готово — вы владелец бота. Теперь можно одобрять запросы доступа.");
-        } else {
-            sender.send(chatId, "Владелец уже назначен.");
-        }
     }
 
     /** /register: notify every admin with approve/reject buttons so they can grant access in one tap. */
