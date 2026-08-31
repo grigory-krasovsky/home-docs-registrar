@@ -69,6 +69,10 @@ public class TelegramBotConfig {
             telegramClient.execute(SetMyCommands.builder()
                     .commands(List.of(
                             BotCommand.builder()
+                                    .command("search")
+                                    .description("Поиск документов по тексту: /search <запрос>")
+                                    .build(),
+                            BotCommand.builder()
                                     .command("get")
                                     .description("Прислать файл документа по номеру: /get <id>")
                                     .build(),
@@ -77,7 +81,7 @@ public class TelegramBotConfig {
                                     .description("Израсходовано токенов на распознавание")
                                     .build()))
                     .build());
-            log.info("Telegram command menu set (/get, /tokens)");
+            log.info("Telegram command menu set (/search, /get, /tokens)");
         } catch (TelegramApiException e) {
             log.warn("Failed to set the Telegram command menu", e);
         }

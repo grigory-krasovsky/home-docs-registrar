@@ -9,6 +9,7 @@ import com.example.homedocsregistrar.extraction.UsageEstimator;
 import com.example.homedocsregistrar.intake.DocumentIntakeService;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
 import com.example.homedocsregistrar.retrieval.DocumentRetrievalService;
+import com.example.homedocsregistrar.search.DocumentSearchService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -18,6 +19,7 @@ import org.telegram.telegrambots.meta.api.objects.message.Message;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -37,19 +39,22 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final DocumentExtractionService extractionService;
     private final DocumentIntakeService intakeService;
     private final DocumentRetrievalService retrievalService;
+    private final DocumentSearchService searchService;
     private final ApiUsageTracker usageTracker;
     private final UsageEstimator usageEstimator;
     private final TelegramProperties telegram;
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
-                             DocumentRetrievalService retrievalService, ApiUsageTracker usageTracker,
-                             UsageEstimator usageEstimator, TelegramProperties telegram) {
+                             DocumentRetrievalService retrievalService, DocumentSearchService searchService,
+                             ApiUsageTracker usageTracker, UsageEstimator usageEstimator,
+                             TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
         this.intakeService = intakeService;
         this.retrievalService = retrievalService;
+        this.searchService = searchService;
         this.usageTracker = usageTracker;
         this.usageEstimator = usageEstimator;
         this.telegram = telegram;
@@ -116,15 +121,84 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private void handleText(long chatId, String text) {
         String trimmed = text.strip();
         String command = trimmed.toLowerCase(Locale.ROOT);
-        if (command.startsWith("/tokens") || command.startsWith("/usage")) {
+        if (command.startsWith("/start") || command.startsWith("/help")) {
+            sender.send(chatId, helpMessage());
+        } else if (command.startsWith("/tokens") || command.startsWith("/usage")) {
             sender.send(chatId, tokensSummary());
         } else if (command.startsWith("/get") || command.startsWith("/doc")) {
             handleGet(chatId, trimmed);
+        } else if (command.startsWith("/search") || command.startsWith("/find")) {
+            handleSearch(chatId, argument(trimmed));
+        } else if (command.startsWith("/")) {
+            sender.send(chatId, helpMessage());
         } else {
-            sender.send(chatId, "Привет! Пришлите документ как файл (вложение), и я его распознаю.\n"
-                    + "• /get <id> — прислать сохранённый файл документа\n"
-                    + "• /tokens — сколько токенов израсходовано на распознавание");
+            // Plain text is treated as a search query — search is the main use case.
+            handleSearch(chatId, trimmed);
         }
+    }
+
+    /** Full-text search by content; lists ranked matches, each retrievable with /get. */
+    private void handleSearch(long chatId, String query) {
+        if (query == null || query.isBlank()) {
+            sender.send(chatId, "Введите слова для поиска, например: /search гарантия холодильник");
+            return;
+        }
+        List<Document> hits = searchService.search(query);
+        if (hits.isEmpty()) {
+            sender.send(chatId, "По запросу «" + query + "» ничего не найдено.");
+            return;
+        }
+        StringBuilder text = new StringBuilder("Найдено (" + hits.size() + ") по «" + query + "»:");
+        for (Document hit : hits) {
+            text.append("\n\n").append(resultLine(hit));
+        }
+        sender.send(chatId, text.toString());
+    }
+
+    /** One search hit: id + fields we have, and how to fetch the file. */
+    private String resultLine(Document document) {
+        StringBuilder line = new StringBuilder("#").append(document.getId());
+        if (document.getDocType() != null && !document.getDocType().isBlank()) {
+            line.append(" · ").append(document.getDocType());
+        }
+        if (document.getTitle() != null && !document.getTitle().isBlank()) {
+            line.append(" · ").append(document.getTitle());
+        }
+        String meta = joinNonBlank(
+                document.getCounterparty(),
+                document.getDocDate() == null ? null : document.getDocDate().toString(),
+                document.getAmount() == null ? null : document.getAmount().toPlainString());
+        if (!meta.isBlank()) {
+            line.append('\n').append(meta);
+        }
+        line.append("\nФайл: /get ").append(document.getId());
+        return line.toString();
+    }
+
+    private static String joinNonBlank(String... values) {
+        StringBuilder joined = new StringBuilder();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                if (joined.length() > 0) {
+                    joined.append(" · ");
+                }
+                joined.append(value);
+            }
+        }
+        return joined.toString();
+    }
+
+    private String helpMessage() {
+        return "Пришлите документ как файл (вложение) — я распознаю и сохраню его.\n"
+                + "Поиск: просто напишите слова (или /search <запрос>).\n"
+                + "• /get <id> — прислать сохранённый файл документа\n"
+                + "• /tokens — сколько токенов израсходовано на распознавание";
+    }
+
+    /** Text after the leading command word (e.g. "/search гарантия" -> "гарантия"); "" if none. */
+    private static String argument(String text) {
+        int space = text.indexOf(' ');
+        return space < 0 ? "" : text.substring(space + 1).strip();
     }
 
     /** Re-send a stored document's file from Telegram by its registry id (resolved to its file_id). */
