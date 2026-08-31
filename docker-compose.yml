@@ -39,6 +39,8 @@ services:
       AGENT_TOKEN: ${AGENT_TOKEN:-}
       # Vision extraction (Claude). Blank -> extraction disabled, the app still runs.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Only for identity-linked keys (not workspace-scoped); leave blank otherwise.
+      ANTHROPIC_WORKSPACE_ID: ${ANTHROPIC_WORKSPACE_ID:-}
     ports:
       # Localhost only; this VPS is shared (8080 is taken by another service), so default to 8081.
       # Override with SERVER_HTTP_PORT in .env if needed. Put a TLS reverse proxy in front for the

@@ -44,13 +44,22 @@ public class DocumentExtractionService {
     private final HeicConverter heicConverter;
 
     public DocumentExtractionService(@Value("${anthropic.api-key:}") String apiKey,
+                                     @Value("${anthropic.workspace-id:}") String workspaceId,
                                      @Value("${anthropic.model:claude-haiku-4-5}") String model,
                                      HeicConverter heicConverter) {
         this.model = model;
         this.heicConverter = heicConverter;
-        this.client = (apiKey == null || apiKey.isBlank())
-                ? null
-                : AnthropicOkHttpClient.builder().apiKey(apiKey).build();
+        if (apiKey == null || apiKey.isBlank()) {
+            this.client = null;
+        } else {
+            var builder = AnthropicOkHttpClient.builder().apiKey(apiKey);
+            // Identity-linked API keys aren't scoped to a workspace and require this header on every
+            // request; workspace-scoped keys don't need it, so only send it when configured.
+            if (workspaceId != null && !workspaceId.isBlank()) {
+                builder.putHeader("anthropic-workspace-id", workspaceId);
+            }
+            this.client = builder.build();
+        }
     }
 
     public boolean isEnabled() {

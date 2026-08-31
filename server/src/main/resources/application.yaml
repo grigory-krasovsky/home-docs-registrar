@@ -20,4 +20,7 @@ telegram:
 anthropic:
   # Vision extraction. Blank key -> the service is disabled and the app still boots (tests/no-key runs).
   api-key: ${ANTHROPIC_API_KEY:}
+  # Required only for identity-linked API keys (not scoped to a workspace); leave blank for a
+  # workspace-scoped key. When set, sent as the anthropic-workspace-id header on every request.
+  workspace-id: ${ANTHROPIC_WORKSPACE_ID:}
   model: ${ANTHROPIC_MODEL:claude-haiku-4-5}
