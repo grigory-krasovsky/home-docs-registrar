@@ -1,8 +1,10 @@
 package com.example.homedocsregistrar.telegram;
 
 import com.example.homedocsregistrar.domain.Document;
+import com.example.homedocsregistrar.extraction.ApiUsageTracker;
 import com.example.homedocsregistrar.extraction.DocumentExtractionService;
 import com.example.homedocsregistrar.extraction.ExtractedFields;
+import com.example.homedocsregistrar.extraction.Extraction;
 import com.example.homedocsregistrar.intake.DocumentIntakeService;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
 import org.slf4j.Logger;
@@ -14,6 +16,7 @@ import org.telegram.telegrambots.meta.api.objects.message.Message;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -31,15 +34,17 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final TelegramFileService fileService;
     private final DocumentExtractionService extractionService;
     private final DocumentIntakeService intakeService;
+    private final ApiUsageTracker usageTracker;
     private final TelegramProperties telegram;
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
-                             TelegramProperties telegram) {
+                             ApiUsageTracker usageTracker, TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
         this.intakeService = intakeService;
+        this.usageTracker = usageTracker;
         this.telegram = telegram;
     }
 
@@ -62,7 +67,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 sender.send(chatId, "Пришлите документ как ФАЙЛ (вложение), а не как фото — "
                         + "иначе Telegram сожмёт изображение и пострадает распознавание.");
             } else if (message.hasText()) {
-                sender.send(chatId, "Привет! Пришлите документ как файл (вложение), и я его распознаю.");
+                handleText(chatId, message.getText());
             }
         } catch (Exception e) {
             log.error("Failed to handle update", e);
@@ -81,16 +86,32 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 return;
             }
 
-            ExtractedFields fields = extractionService.extract(bytes).orElse(null);
+            Extraction extraction = extractionService.extract(bytes).orElse(null);
+            ExtractedFields fields = extraction == null ? null : extraction.fields();
             IntakeResult result = intakeService.save(fileId, fileName, bytes, fields);
             if (result.duplicate()) {
                 sender.send(chatId, "Этот документ уже сохранён (id=" + result.document().getId() + ").");
                 return;
             }
-            sender.send(chatId, summary(result.document(), fields));
+
+            String text = summary(result.document(), fields);
+            if (extraction != null) {
+                text += "\n\n" + tokenStatus(extraction);
+            }
+            sender.send(chatId, text);
         } catch (Exception e) {
             log.error("Intake failed for document {}", fileId, e);
             sender.send(chatId, "Не удалось обработать файл. Попробуйте ещё раз.");
+        }
+    }
+
+    private void handleText(long chatId, String text) {
+        String command = text.strip().toLowerCase(Locale.ROOT);
+        if (command.startsWith("/tokens") || command.startsWith("/usage")) {
+            sender.send(chatId, tokensSummary());
+        } else {
+            sender.send(chatId, "Привет! Пришлите документ как файл (вложение), и я его распознаю.\n"
+                    + "Команда /tokens — сколько токенов израсходовано на распознавание.");
         }
     }
 
@@ -117,6 +138,27 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         if (value != null && !value.isBlank()) {
             text.append('\n').append(label).append(": ").append(value);
         }
+    }
+
+    /** Per-document token spend plus the running cumulative total, appended to a recognition reply. */
+    private String tokenStatus(Extraction extraction) {
+        return "🔢 Токены — документ: " + fmt(extraction.totalTokens())
+                + " (in " + fmt(extraction.inputTokens()) + " / out " + fmt(extraction.outputTokens()) + ")"
+                + "\nВсего израсходовано: " + fmt(usageTracker.currentTotals().total());
+    }
+
+    /** Reply for the /tokens command: cumulative token spend across all recognitions. */
+    private String tokensSummary() {
+        ApiUsageTracker.Totals totals = usageTracker.currentTotals();
+        return "Израсходовано токенов на распознавание: " + fmt(totals.total())
+                + "\n• ввод (in): " + fmt(totals.inputTokens())
+                + "\n• вывод (out): " + fmt(totals.outputTokens())
+                + "\n\nЭто суммарный расход токенов. Остаток кредита — в консоли Anthropic (Billing).";
+    }
+
+    /** Group digits with spaces (e.g. 23 350) so big token counts stay readable. */
+    private static String fmt(long tokens) {
+        return String.format(Locale.ROOT, "%,d", tokens).replace(',', ' ');
     }
 
     /** Until ARCHIVE_CHANNEL_ID is configured, log the id of any channel the bot sees so it can be captured. */

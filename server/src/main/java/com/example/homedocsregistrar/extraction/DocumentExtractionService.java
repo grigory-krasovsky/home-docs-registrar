@@ -71,7 +71,7 @@ public class DocumentExtractionService {
     }
 
     /** Extract fields from a document image; empty if disabled or the bytes aren't a readable image. */
-    public Optional<ExtractedFields> extract(byte[] fileBytes) {
+    public Optional<Extraction> extract(byte[] fileBytes) {
         if (client == null) {
             return Optional.empty();
         }
@@ -100,11 +100,14 @@ public class DocumentExtractionService {
 
         try {
             StructuredMessage<ExtractedFields> response = client.messages().create(params);
-            recordUsage(response);
+            long inputTokens = response.usage().inputTokens();
+            long outputTokens = response.usage().outputTokens();
+            recordUsage(inputTokens, outputTokens);
             return response.content().stream()
                     .flatMap(block -> block.text().stream())
                     .map(text -> text.text())
-                    .findFirst();
+                    .findFirst()
+                    .map(fields -> new Extraction(fields, inputTokens, outputTokens));
         } catch (RuntimeException e) {
             log.error("Vision extraction failed", e);
             return Optional.empty();
@@ -112,9 +115,9 @@ public class DocumentExtractionService {
     }
 
     /** Persist/log token usage; best-effort so a tracking failure never discards a good extraction. */
-    private void recordUsage(StructuredMessage<ExtractedFields> response) {
+    private void recordUsage(long inputTokens, long outputTokens) {
         try {
-            usageTracker.record(response.usage().inputTokens(), response.usage().outputTokens(), model);
+            usageTracker.record(inputTokens, outputTokens, model);
         } catch (RuntimeException e) {
             log.warn("Failed to record API usage", e);
         }

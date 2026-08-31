@@ -24,6 +24,14 @@ public class ApiUsageTracker {
         this.usage = usage;
     }
 
+    /** Cumulative token usage across all extractions; zeros if nothing has been spent yet. */
+    @Transactional(readOnly = true)
+    public Totals currentTotals() {
+        return usage.findById(ApiUsage.SINGLETON_ID)
+                .map(u -> new Totals(u.getInputTokens(), u.getOutputTokens()))
+                .orElse(new Totals(0, 0));
+    }
+
     /** Add one call's token counts to the persistent total and log per-call + cumulative usage. */
     @Transactional
     public void record(long inputTokens, long outputTokens, String model) {
@@ -38,5 +46,13 @@ public class ApiUsageTracker {
         long outTotal = total != null ? total.getOutputTokens() : outputTokens;
         log.info("Vision usage: in={} out={} (model={}); cumulative in={} out={} total={} tokens",
                 inputTokens, outputTokens, model, inTotal, outTotal, inTotal + outTotal);
+    }
+
+    /** Cumulative input/output token counts. */
+    public record Totals(long inputTokens, long outputTokens) {
+
+        public long total() {
+            return inputTokens + outputTokens;
+        }
     }
 }

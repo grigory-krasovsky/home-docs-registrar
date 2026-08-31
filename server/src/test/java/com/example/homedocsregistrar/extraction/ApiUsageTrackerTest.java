@@ -21,6 +21,9 @@ class ApiUsageTrackerTest {
 
     @Test
     void seedsThenAccumulatesTokensInOneRow() {
+        // Nothing spent yet -> zeros, no row.
+        assertThat(tracker.currentTotals().total()).isZero();
+
         // First call: no counter row yet -> it is seeded with this call's counts.
         tracker.record(100, 20, "claude-haiku-4-5");
         // Subsequent calls: atomically added to the same row.
@@ -30,5 +33,10 @@ class ApiUsageTrackerTest {
         assertThat(total.getInputTokens()).isEqualTo(150);
         assertThat(total.getOutputTokens()).isEqualTo(30);
         assertThat(usage.count()).isEqualTo(1);
+
+        ApiUsageTracker.Totals totals = tracker.currentTotals();
+        assertThat(totals.inputTokens()).isEqualTo(150);
+        assertThat(totals.outputTokens()).isEqualTo(30);
+        assertThat(totals.total()).isEqualTo(180);
     }
 }
