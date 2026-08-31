@@ -79,9 +79,13 @@ public class TelegramBotConfig {
                             BotCommand.builder()
                                     .command("tokens")
                                     .description("Израсходовано токенов на распознавание")
+                                    .build(),
+                            BotCommand.builder()
+                                    .command("register")
+                                    .description("Запросить доступ к боту")
                                     .build()))
                     .build());
-            log.info("Telegram command menu set (/search, /get, /tokens)");
+            log.info("Telegram command menu set (/search, /get, /tokens, /register)");
         } catch (TelegramApiException e) {
             log.warn("Failed to set the Telegram command menu", e);
         }

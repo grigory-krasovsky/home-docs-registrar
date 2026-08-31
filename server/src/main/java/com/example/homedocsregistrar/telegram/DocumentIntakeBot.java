@@ -1,5 +1,7 @@
 package com.example.homedocsregistrar.telegram;
 
+import com.example.homedocsregistrar.access.AccessService;
+import com.example.homedocsregistrar.domain.AllowedUser;
 import com.example.homedocsregistrar.domain.Document;
 import com.example.homedocsregistrar.extraction.ApiUsageTracker;
 import com.example.homedocsregistrar.extraction.DocumentExtractionService;
@@ -27,7 +29,6 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.Set;
 
 /**
  * Receives Telegram updates (long polling) and drives document intake: a document sent as a file is
@@ -48,14 +49,14 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final DocumentSearchService searchService;
     private final ApiUsageTracker usageTracker;
     private final UsageEstimator usageEstimator;
+    private final AccessService accessService;
     private final TelegramProperties telegram;
-    private final Set<Long> allowedUserIds;
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
                              DocumentRetrievalService retrievalService, DocumentSearchService searchService,
                              ApiUsageTracker usageTracker, UsageEstimator usageEstimator,
-                             TelegramProperties telegram) {
+                             AccessService accessService, TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
@@ -64,25 +65,15 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.searchService = searchService;
         this.usageTracker = usageTracker;
         this.usageEstimator = usageEstimator;
+        this.accessService = accessService;
         this.telegram = telegram;
-        this.allowedUserIds = telegram.allowedUserIds() == null ? Set.of() : Set.copyOf(telegram.allowedUserIds());
-        if (this.allowedUserIds.isEmpty()) {
-            log.warn("TELEGRAM_ALLOWED_USER_IDS is not set - the bot is OPEN to any Telegram user");
-        } else {
-            log.info("Bot access restricted to {} Telegram user id(s)", this.allowedUserIds.size());
-        }
     }
 
     @Override
     public void consume(Update update) {
         try {
             if (update.hasCallbackQuery()) {
-                CallbackQuery callback = update.getCallbackQuery();
-                if (!isAuthorized(userId(callback.getFrom()))) {
-                    sender.answerCallback(callback.getId(), "Доступ запрещён.");
-                    return;
-                }
-                handleCallback(callback);
+                handleCallbackQuery(update.getCallbackQuery());
                 return;
             }
             if (update.hasChannelPost()) {
@@ -94,17 +85,28 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             }
             Message message = update.getMessage();
             long chatId = message.getChatId();
-            Long fromId = userId(message.getFrom());
+            User from = message.getFrom();
+            Long fromId = userId(from);
 
-            // /whoami is answered before the access check, so a family member can fetch their id to be added.
-            if (message.hasText() && message.getText().strip().toLowerCase(Locale.ROOT).startsWith("/whoami")) {
-                sender.send(chatId, "Ваш Telegram ID: " + fromId);
-                return;
+            // Access-management commands are answered BEFORE the allow-list check, so a new user can
+            // bootstrap (/claim) or request access (/register), and anyone can look up their id.
+            if (message.hasText()) {
+                String command = message.getText().strip().toLowerCase(Locale.ROOT);
+                if (command.startsWith("/whoami")) {
+                    sender.send(chatId, "Ваш Telegram ID: " + fromId);
+                    return;
+                }
+                if (command.startsWith("/claim")) {
+                    handleClaim(chatId, fromId, displayName(from));
+                    return;
+                }
+                if (command.startsWith("/register")) {
+                    handleRegister(chatId, fromId, displayName(from));
+                    return;
+                }
             }
-            if (!isAuthorized(fromId)) {
-                log.warn("Denied unauthorized Telegram user id={}", fromId);
-                sender.send(chatId, "Доступ запрещён. Ваш Telegram ID: " + fromId
-                        + " — передайте его владельцу бота, чтобы получить доступ.");
+            if (!accessService.isAllowed(fromId)) {
+                sender.send(chatId, "Доступ к этому боту закрыт. Нажмите /register, чтобы запросить доступ.");
                 return;
             }
 
@@ -121,13 +123,100 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
     }
 
-    /** True when no allow-list is configured (open) or the user is on it. */
-    private boolean isAuthorized(Long userId) {
-        return allowedUserIds.isEmpty() || (userId != null && allowedUserIds.contains(userId));
+    private void handleCallbackQuery(CallbackQuery callback) {
+        String data = callback.getData();
+        if (data != null && (data.startsWith("approve:") || data.startsWith("reject:"))) {
+            handleApproval(callback);
+            return;
+        }
+        if (!accessService.isAllowed(userId(callback.getFrom()))) {
+            sender.answerCallback(callback.getId(), "Доступ закрыт.");
+            return;
+        }
+        handleCallback(callback);
+    }
+
+    /** /claim: the first user to run it becomes the admin; it does nothing once an admin exists. */
+    private void handleClaim(long chatId, Long userId, String displayName) {
+        if (accessService.claim(userId, displayName)) {
+            sender.send(chatId, "Готово — вы владелец бота. Теперь можно одобрять запросы доступа.");
+        } else {
+            sender.send(chatId, "Владелец уже назначен.");
+        }
+    }
+
+    /** /register: notify every admin with approve/reject buttons so they can grant access in one tap. */
+    private void handleRegister(long chatId, Long userId, String displayName) {
+        if (userId == null) {
+            return;
+        }
+        if (accessService.isAllowed(userId)) {
+            sender.send(chatId, "У вас уже есть доступ.");
+            return;
+        }
+        List<AllowedUser> admins = accessService.admins();
+        if (admins.isEmpty()) {
+            sender.send(chatId, "Владелец бота ещё не настроен. Попробуйте позже.");
+            return;
+        }
+        var keyboard = InlineKeyboardMarkup.builder()
+                .keyboardRow(new InlineKeyboardRow(
+                        InlineKeyboardButton.builder().text("✅ Разрешить").callbackData("approve:" + userId).build(),
+                        InlineKeyboardButton.builder().text("❌ Отклонить").callbackData("reject:" + userId).build()))
+                .build();
+        String request = "Запрос доступа: " + displayName + " (id=" + userId + ")";
+        for (AllowedUser admin : admins) {
+            sender.send(admin.getTelegramUserId(), request, keyboard);
+        }
+        sender.send(chatId, "Запрос отправлен владельцу. Ожидайте подтверждения.");
+    }
+
+    /** An admin tapped ✅/❌ on an access request: grant or decline, then notify both sides. */
+    private void handleApproval(CallbackQuery callback) {
+        Long adminId = userId(callback.getFrom());
+        if (!accessService.isAdmin(adminId)) {
+            sender.answerCallback(callback.getId(), "Только владелец может одобрять доступ.");
+            return;
+        }
+        String data = callback.getData();
+        boolean approve = data.startsWith("approve:");
+        Long requesterId = parseLong(data.substring(data.indexOf(':') + 1));
+        if (requesterId == null) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        if (approve) {
+            boolean added = accessService.approve(requesterId, null);
+            sender.answerCallback(callback.getId(), added ? "Доступ выдан." : "Пользователь уже имел доступ.");
+            if (added) {
+                sender.send(requesterId, "Доступ открыт ✅ Пришлите документ как файл или введите запрос для поиска.");
+            }
+        } else {
+            sender.answerCallback(callback.getId(), "Запрос отклонён.");
+            sender.send(requesterId, "В доступе отказано.");
+        }
     }
 
     private static Long userId(User from) {
         return from == null ? null : from.getId();
+    }
+
+    /** Human-readable name for logs/requests: first+last name, falling back to @username or the id. */
+    private static String displayName(User from) {
+        if (from == null) {
+            return "неизвестный";
+        }
+        StringBuilder name = new StringBuilder();
+        if (from.getFirstName() != null) {
+            name.append(from.getFirstName());
+        }
+        if (from.getLastName() != null && !from.getLastName().isBlank()) {
+            name.append(name.isEmpty() ? "" : " ").append(from.getLastName());
+        }
+        if (from.getUserName() != null && !from.getUserName().isBlank()) {
+            name.append(name.isEmpty() ? "" : " ").append("@").append(from.getUserName());
+        }
+        return name.isEmpty() ? String.valueOf(from.getId()) : name.toString();
     }
 
     private void handleDocument(long chatId, String fileId, String fileName) {

@@ -21,9 +21,6 @@ telegram:
   # Blank when unset -> the bot is disabled but the app still boots (see TelegramBotConfig).
   bot-token: ${TELEGRAM_BOT_TOKEN:}
   archive-channel-id: ${ARCHIVE_CHANNEL_ID:}
-  # Numeric Telegram user ids allowed to use the bot (comma-separated, e.g. "111,222"). Empty -> open to
-  # everyone (a startup warning is logged). Send /whoami to the bot to learn an id.
-  allowed-user-ids: ${TELEGRAM_ALLOWED_USER_IDS:}
 
 anthropic:
   # Vision extraction. Blank key -> the service is disabled and the app still boots (tests/no-key runs).
