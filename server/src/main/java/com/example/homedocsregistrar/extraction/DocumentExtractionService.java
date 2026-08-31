@@ -1,7 +1,6 @@
 package com.example.homedocsregistrar.extraction;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.Base64ImageSource;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.ImageBlockParam;
@@ -9,6 +8,7 @@ import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.StructuredMessage;
 import com.anthropic.models.messages.StructuredMessageCreateParams;
 import com.anthropic.models.messages.TextBlockParam;
+import com.example.homedocsregistrar.ai.AnthropicClients;
 import com.example.homedocsregistrar.ocr.HeicConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,17 +53,7 @@ public class DocumentExtractionService {
         this.model = model;
         this.heicConverter = heicConverter;
         this.usageTracker = usageTracker;
-        if (apiKey == null || apiKey.isBlank()) {
-            this.client = null;
-        } else {
-            var builder = AnthropicOkHttpClient.builder().apiKey(apiKey);
-            // Identity-linked API keys aren't scoped to a workspace and require this header on every
-            // request; workspace-scoped keys don't need it, so only send it when configured.
-            if (workspaceId != null && !workspaceId.isBlank()) {
-                builder.putHeader("anthropic-workspace-id", workspaceId);
-            }
-            this.client = builder.build();
-        }
+        this.client = AnthropicClients.build(apiKey, workspaceId);
         if (this.client == null) {
             log.warn("ANTHROPIC_API_KEY is not set - vision extraction is disabled");
         } else {

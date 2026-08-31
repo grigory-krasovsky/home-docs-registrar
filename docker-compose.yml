@@ -45,6 +45,8 @@ services:
       ANTHROPIC_POOL_USD: ${ANTHROPIC_POOL_USD:-5.00}
       ANTHROPIC_PRICE_INPUT_PER_MTOK: ${ANTHROPIC_PRICE_INPUT_PER_MTOK:-1.00}
       ANTHROPIC_PRICE_OUTPUT_PER_MTOK: ${ANTHROPIC_PRICE_OUTPUT_PER_MTOK:-5.00}
+      # Semantic query expansion for search (Claude). Set false for plain FTS.
+      SEARCH_EXPAND_QUERY: ${SEARCH_EXPAND_QUERY:-true}
     ports:
       # Localhost only; this VPS is shared (8080 is taken by another service), so default to 8081.
       # Override with SERVER_HTTP_PORT in .env if needed. Put a TLS reverse proxy in front for the

@@ -38,3 +38,8 @@ anthropic:
   price:
     input-per-mtok: ${ANTHROPIC_PRICE_INPUT_PER_MTOK:1.00}
     output-per-mtok: ${ANTHROPIC_PRICE_OUTPUT_PER_MTOK:5.00}
+
+search:
+  # Expand a search query into related Russian terms via Claude before the FTS lookup, so e.g. «свадьба»
+  # also matches «свидетельство о браке». Adds one cheap Haiku call per search; set false for plain FTS.
+  expand-query: ${SEARCH_EXPAND_QUERY:true}

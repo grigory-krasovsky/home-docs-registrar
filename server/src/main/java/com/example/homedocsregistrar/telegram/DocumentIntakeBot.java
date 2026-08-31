@@ -150,13 +150,17 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.send(chatId, "Введите слова для поиска, например: /search гарантия холодильник");
             return;
         }
-        List<Document> hits = searchService.search(query);
+        DocumentSearchService.SearchResult result = searchService.search(query);
+        List<Document> hits = result.hits();
         if (hits.isEmpty()) {
             sender.send(chatId, "По запросу «" + query + "» ничего не найдено.");
             return;
         }
-        StringBuilder text = new StringBuilder(
-                "Найдено (" + hits.size() + ") по «" + query + "». Нажмите кнопку, чтобы открыть файл:");
+        StringBuilder text = new StringBuilder("Найдено (" + hits.size() + ") по «" + query + "»");
+        if (!result.relatedTerms().isEmpty()) {
+            text.append("\nИскал также: ").append(String.join(", ", result.relatedTerms()));
+        }
+        text.append("\nНажмите кнопку, чтобы открыть файл:");
         var keyboard = InlineKeyboardMarkup.builder();
         for (Document hit : hits) {
             text.append("\n\n").append(resultLine(hit));
