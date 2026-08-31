@@ -18,22 +18,15 @@ public interface DocumentRepository extends JpaRepository<Document, Long> {
     Optional<Document> findByContentHash(String contentHash);
 
     /**
-     * Russian full-text search over the transcribed text and key fields, ranked by relevance.
-     * Postgres-specific (`to_tsvector`/`websearch_to_tsquery`, config {@code russian}) — not exercised
-     * by the H2 tests; verified against real Postgres. No GIN index yet (query-time tsvector); fine at
-     * a personal registry's scale, add a generated column + GIN index if the corpus grows.
+     * Russian full-text search over the transcribed text and key fields, ranked by relevance. Uses the
+     * GIN-indexed {@code search_vector} generated column (see Flyway V2). Postgres-specific
+     * (`websearch_to_tsquery`, config {@code russian}) — not exercised by the H2 tests; verified against
+     * real Postgres.
      */
     @Query(value = """
             SELECT * FROM document
-            WHERE to_tsvector('russian',
-                    coalesce(ocr_text, '') || ' ' || coalesce(title, '') || ' ' ||
-                    coalesce(doc_type, '') || ' ' || coalesce(counterparty, '') || ' ' ||
-                    coalesce(document_number, '')) @@ websearch_to_tsquery('russian', :query)
-            ORDER BY ts_rank(to_tsvector('russian',
-                    coalesce(ocr_text, '') || ' ' || coalesce(title, '') || ' ' ||
-                    coalesce(doc_type, '') || ' ' || coalesce(counterparty, '') || ' ' ||
-                    coalesce(document_number, '')),
-                    websearch_to_tsquery('russian', :query)) DESC
+            WHERE search_vector @@ websearch_to_tsquery('russian', :query)
+            ORDER BY ts_rank(search_vector, websearch_to_tsquery('russian', :query)) DESC
             LIMIT :limit
             """, nativeQuery = true)
     List<Document> search(@Param("query") String query, @Param("limit") int limit);

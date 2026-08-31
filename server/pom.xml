@@ -54,6 +54,18 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Flyway owns the Postgres schema: a baseline (V1) plus the FTS migration (V2 = generated
+             tsvector column + GIN index). Disabled for the H2 tests (Postgres-specific SQL) — there
+             Hibernate builds the schema. flyway-database-postgresql is required for Postgres. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
         <!-- In-memory DB for tests only, so @SpringBootTest boots without a real Postgres.
              Postgres-specific FTS is implemented against real Postgres (step 3), not exercised here. -->
         <dependency>

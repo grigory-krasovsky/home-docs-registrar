@@ -8,9 +8,14 @@ spring:
   jpa:
     open-in-view: false
     hibernate:
-      # MVP: let Hibernate manage the schema. Postgres-specific FTS (tsvector + GIN) is added
-      # separately in step 3; consider switching to Flyway migrations then.
-      ddl-auto: update
+      # Flyway owns the schema now (see src/main/resources/db/migration + spring.flyway below);
+      # Hibernate only maps onto it, it neither creates nor validates.
+      ddl-auto: none
+  flyway:
+    # The live database predates Flyway: on a non-empty schema baseline V1 (its create-tables) as
+    # already-applied, then run forward migrations (V2 = FTS). A fresh database runs V1 then V2.
+    baseline-on-migrate: true
+    baseline-version: 1
 
 telegram:
   # Blank when unset -> the bot is disabled but the app still boots (see TelegramBotConfig).
