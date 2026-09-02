@@ -15,7 +15,9 @@ import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Persists a received document into the registry: dedupes by content hash, archives the file to the
@@ -89,8 +91,20 @@ public class DocumentIntakeService {
         return messageId == null ? null : messageId.longValue();
     }
 
+    // The vision model sometimes emits a literal "absent" marker (e.g. "+null", "null", "—") instead of a
+    // real JSON null; treat those as no value so they don't get stored/searched.
+    private static final Set<String> ABSENT_MARKERS = Set.of(
+            "null", "+null", "none", "n/a", "na", "nan", "-", "—", "нет", "не указано", "отсутствует");
+
     private static String blankToNull(String value) {
-        return (value == null || value.isBlank()) ? null : value.trim();
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty() || ABSENT_MARKERS.contains(trimmed.toLowerCase(Locale.ROOT))) {
+            return null;
+        }
+        return trimmed;
     }
 
     private static LocalDate parseDate(String value) {
