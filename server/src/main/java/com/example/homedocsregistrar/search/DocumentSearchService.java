@@ -39,15 +39,15 @@ public class DocumentSearchService {
     }
 
     /**
-     * Build one {@code websearch_to_tsquery} string that ORs the original and related terms. Each term is
-     * quoted (so a multi-word term is a phrase) and joined with the {@code or} operator; embedded quotes
-     * are stripped so the query stays well-formed.
+     * Build one {@code websearch_to_tsquery} string that ORs the original and related terms. Terms are NOT
+     * quoted: a multi-word term becomes an AND of its words (matches when all words appear anywhere), not a
+     * strict phrase — otherwise «свидетельство о браке» wouldn't match «свидетельство о заключении брака».
+     * Quotes and hyphens are stripped so the term isn't parsed as a phrase or a NOT operator.
      */
     private static String buildOrQuery(String original, List<String> related) {
         return Stream.concat(Stream.of(original), related.stream())
-                .map(term -> term.replace('"', ' ').trim())
+                .map(term -> term.replaceAll("[\"-]", " ").trim().replaceAll("\\s+", " "))
                 .filter(term -> !term.isBlank())
-                .map(term -> '"' + term + '"')
                 .collect(Collectors.joining(" or "));
     }
 
