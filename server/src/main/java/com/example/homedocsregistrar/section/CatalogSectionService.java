@@ -36,9 +36,14 @@ public class CatalogSectionService {
         return sections.findByParentOrderByIdAsc(parent);
     }
 
-    /** All leaf subsections — the buckets a document can be filed into (for the suggestion prompt). */
-    public List<CatalogSection> leaves() {
-        return sections.findByParentIsNotNullOrderByIdAsc();
+    /**
+     * All leaf subsection paths «Владелец / Подсекция» — the buckets shown to the suggester. Built
+     * inside a transaction so {@link CatalogSection#path()} can load each leaf's (lazy) parent; callers
+     * get plain strings and never touch a JPA proxy.
+     */
+    @Transactional(readOnly = true)
+    public List<String> leafPaths() {
+        return sections.findByParentIsNotNullOrderByIdAsc().stream().map(CatalogSection::path).toList();
     }
 
     public Optional<CatalogSection> byId(Long id) {

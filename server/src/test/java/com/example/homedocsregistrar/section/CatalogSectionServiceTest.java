@@ -60,6 +60,16 @@ class CatalogSectionServiceTest {
     }
 
     @Test
+    void leafPathsRenderOwnerSlashSub() {
+        CatalogSection grisha = sections.save(new CatalogSection(null, "Гриша"));
+        sections.save(new CatalogSection("Личное", grisha));
+        sections.save(new CatalogSection("Медицина и здоровье", grisha));
+
+        // Leaf paths are rendered strings (parent loaded in-tx) — what the suggester consumes.
+        assertThat(service.leafPaths()).containsExactly("Гриша / Личное", "Гриша / Медицина и здоровье");
+    }
+
+    @Test
     void assignFilesDocumentAndReportsPath() {
         CatalogSection obshaya = sections.save(new CatalogSection(null, "Общая"));
         CatalogSection avto = sections.save(new CatalogSection("Авто", obshaya));

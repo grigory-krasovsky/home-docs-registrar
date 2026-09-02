@@ -4,7 +4,6 @@ import com.anthropic.client.AnthropicClient;
 import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.MessageCreateParams;
 import com.example.homedocsregistrar.ai.AnthropicClients;
-import com.example.homedocsregistrar.domain.CatalogSection;
 import com.example.homedocsregistrar.extraction.ApiUsageTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,14 +67,18 @@ public class SectionSuggestionService {
      * Best subsection for a document, given its short summary and the current leaf sections. Empty when
      * disabled, when there are no sections to choose from, or on any error/unparseable reply.
      */
-    public Optional<Suggestion> suggest(String documentSummary, List<CatalogSection> leaves) {
-        if (!isEnabled() || documentSummary == null || documentSummary.isBlank() || leaves == null || leaves.isEmpty()) {
+    public Optional<Suggestion> suggest(String documentSummary, List<String> leafPaths) {
+        if (!isEnabled() || documentSummary == null || documentSummary.isBlank() || leafPaths == null || leafPaths.isEmpty()) {
             return Optional.empty();
         }
-        Set<String> owners = leaves.stream()
-                .map(leaf -> leaf.getParent() == null ? leaf.getLabel() : leaf.getParent().getLabel())
+        // Owners = the first segment of each «Владелец / Подсекция» path; the model may only pick an
+        // existing owner (guards against inventing new top-level sections). Paths are pre-rendered
+        // strings (built inside a transaction) so nothing here touches a lazy JPA proxy.
+        Set<String> owners = leafPaths.stream()
+                .map(SectionSuggestionService::ownerOf)
+                .filter(owner -> !owner.isBlank())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        String paths = leaves.stream().map(CatalogSection::path).distinct().collect(Collectors.joining("\n"));
+        String paths = leafPaths.stream().distinct().collect(Collectors.joining("\n"));
         String userMessage = "Допустимые пути:\n" + paths + "\n\nДокумент:\n" + documentSummary;
         try {
             MessageCreateParams params = MessageCreateParams.builder()
@@ -137,6 +140,12 @@ public class SectionSuggestionService {
     /** Strip leading bullets/numbering/quotes and surrounding whitespace from a term. */
     private static String clean(String value) {
         return value.replaceAll("^[\\d.)\\-•*\\s\"]+", "").replace("\"", "").trim();
+    }
+
+    /** The owner (top-level) segment of a «Владелец / Подсекция» path. */
+    private static String ownerOf(String path) {
+        int slash = path.indexOf('/');
+        return (slash < 0 ? path : path.substring(0, slash)).trim();
     }
 
     /** A proposed filing: an existing owner label plus a subsection name (which may be new). */

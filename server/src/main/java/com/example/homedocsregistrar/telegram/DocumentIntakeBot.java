@@ -390,13 +390,13 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
     /** After saving, propose a subsection (or show the picker) so the user files the document. */
     private void offerSection(long chatId, Document document) {
-        List<CatalogSection> leaves = sectionService.leaves();
-        if (leaves.isEmpty()) {
+        List<String> leafPaths = sectionService.leafPaths();
+        if (leafPaths.isEmpty()) {
             return; // catalog not set up yet — nothing to file into
         }
         long docId = document.getId();
         Optional<SectionSuggestionService.Suggestion> suggestion = suggestionService.isEnabled()
-                ? suggestionService.suggest(documentSummaryForSection(document), leaves)
+                ? suggestionService.suggest(documentSummaryForSection(document), leafPaths)
                 : Optional.empty();
         if (suggestion.isPresent()) {
             pendingSuggestion.put(docId, suggestion.get());
