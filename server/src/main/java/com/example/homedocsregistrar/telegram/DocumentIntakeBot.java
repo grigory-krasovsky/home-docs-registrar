@@ -125,10 +125,12 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             if (message.hasText()) {
                 String command = message.getText().strip().toLowerCase(Locale.ROOT);
                 if (command.startsWith("/whoami")) {
+                    sender.deleteMessage(chatId, message.getMessageId());
                     sender.send(chatId, "Ваш Telegram ID: " + fromId);
                     return;
                 }
                 if (command.startsWith("/register")) {
+                    sender.deleteMessage(chatId, message.getMessageId());
                     handleRegister(chatId, fromId, displayName(from));
                     return;
                 }
@@ -156,7 +158,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 sender.send(chatId, "Пришлите документ как ФАЙЛ (вложение), а не как фото — "
                         + "иначе Telegram сожмёт изображение и пострадает распознавание.");
             } else if (message.hasText()) {
-                handleText(chatId, message.getText());
+                handleText(chatId, message.getMessageId(), message.getText());
             }
         } catch (Exception e) {
             log.error("Failed to handle update", e);
@@ -356,7 +358,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         offerSection(chatId, document);
     }
 
-    private void handleText(long chatId, String text) {
+    private void handleText(long chatId, int messageId, String text) {
         String trimmed = text.strip();
         String command = trimmed.toLowerCase(Locale.ROOT);
 
@@ -365,9 +367,16 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         if (pending != null) {
             pendingSectionInput.remove(chatId);
             if (!command.startsWith("/")) {
+                sender.deleteMessage(chatId, messageId); // the typed name disappears; the dialog message updates
                 createSectionFromInput(chatId, pending, trimmed);
                 return;
             }
+            if (command.startsWith("/cancel")) { // cancel in place: turn the prompt into «Отменено.»
+                sender.deleteMessage(chatId, messageId);
+                render(chatId, pending.promptMessageId(), "Отменено.", null);
+                return;
+            }
+            // any other command cancels the pending input silently and is handled normally below
         }
 
         if (command.startsWith("/start") || command.startsWith("/help")) {
@@ -389,9 +398,12 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         } else if (command.startsWith("/")) {
             sender.send(chatId, helpMessage());
         } else {
-            // Plain text is treated as a search query — search is the main use case.
+            // Plain text is treated as a search query — search is the main use case; keep the query message.
             handleSearch(chatId, trimmed);
+            return;
         }
+        // Any recognized command: remove the user's command message so only its result remains in the chat.
+        sender.deleteMessage(chatId, messageId);
     }
 
     // ----- card-catalog section filing -----
@@ -458,11 +470,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             case "acc" -> acceptSuggestion(chatId, messageId, callback, docId);
             case "pick" -> {
                 sender.answerCallback(callback.getId(), null);
-                promptTopLevel(chatId, messageId, docId); // edit the current dialog message in place
-            }
-            case "file" -> {
-                sender.answerCallback(callback.getId(), null);
-                promptTopLevel(chatId, null, docId); // from the browser: fresh message, keep the list
+                promptTopLevel(chatId, messageId, docId); // edit the current message in place (list/offer -> picker)
             }
             case "top" -> {
                 sender.answerCallback(callback.getId(), null);
@@ -630,8 +638,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             String mark = doc.sectionPath() == null ? "✱ без секции" : "📁 " + doc.sectionPath();
             String label = "#" + doc.id() + " · " + truncate(doc.title(), 22) + " — " + mark;
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
-                    // Open a fresh picker (sec:file) so the list stays for filing more docs; no Claude call.
-                    .text(truncate(label, 60)).callbackData("sec:file:" + doc.id()).build()));
+                    // Edit this list message into the picker (list disappears) — no Claude call.
+                    .text(truncate(label, 60)).callbackData("sec:pick:" + doc.id()).build()));
         }
         if (docPage.hasNext()) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()

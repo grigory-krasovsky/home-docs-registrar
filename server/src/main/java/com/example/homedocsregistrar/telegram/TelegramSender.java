@@ -7,6 +7,7 @@ import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.send.SendChatAction;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.message.Message;
@@ -70,6 +71,22 @@ public class TelegramSender {
             telegramClient.execute(SendChatAction.builder().chatId(chatId).action(action).build());
         } catch (TelegramApiException e) {
             log.debug("Failed to send chat action to chat {}", chatId, e);
+        }
+    }
+
+    /**
+     * Delete a message (in a private chat a bot may delete both its own and the user's incoming messages,
+     * within 48h). Used to remove a command message so only its result remains. Best-effort — a failure
+     * (e.g. no delete rights in a group, or already deleted) is only logged.
+     */
+    public void deleteMessage(long chatId, int messageId) {
+        try {
+            telegramClient.execute(DeleteMessage.builder()
+                    .chatId(String.valueOf(chatId))
+                    .messageId(messageId)
+                    .build());
+        } catch (TelegramApiException e) {
+            log.debug("Failed to delete message {} in chat {}", messageId, chatId, e);
         }
     }
 
