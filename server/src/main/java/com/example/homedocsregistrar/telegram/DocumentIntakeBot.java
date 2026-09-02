@@ -1,6 +1,7 @@
 package com.example.homedocsregistrar.telegram;
 
 import com.example.homedocsregistrar.access.AccessService;
+import com.example.homedocsregistrar.access.RegistrationThrottle;
 import com.example.homedocsregistrar.domain.AllowedUser;
 import com.example.homedocsregistrar.domain.CatalogSection;
 import com.example.homedocsregistrar.domain.Document;
@@ -62,6 +63,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final ApiUsageTracker usageTracker;
     private final UsageEstimator usageEstimator;
     private final AccessService accessService;
+    private final RegistrationThrottle registrationThrottle;
     private final MediaGroupCollector mediaGroupCollector;
     private final CatalogSectionService sectionService;
     private final SectionSuggestionService suggestionService;
@@ -76,7 +78,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
                              DocumentRetrievalService retrievalService, DocumentSearchService searchService,
                              ApiUsageTracker usageTracker, UsageEstimator usageEstimator,
-                             AccessService accessService, MediaGroupCollector mediaGroupCollector,
+                             AccessService accessService, RegistrationThrottle registrationThrottle,
+                             MediaGroupCollector mediaGroupCollector,
                              CatalogSectionService sectionService, SectionSuggestionService suggestionService,
                              TelegramProperties telegram) {
         this.sender = sender;
@@ -88,6 +91,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.usageTracker = usageTracker;
         this.usageEstimator = usageEstimator;
         this.accessService = accessService;
+        this.registrationThrottle = registrationThrottle;
         this.mediaGroupCollector = mediaGroupCollector;
         this.sectionService = sectionService;
         this.suggestionService = suggestionService;
@@ -203,6 +207,12 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         if (accessService.isAllowed(userId)) {
             sender.send(chatId, "У вас уже есть доступ.");
+            return;
+        }
+        // Anti-flood: throttle the fan-out to admins so /register can't be used to spam the owner. When
+        // throttled (this user already asked recently, or the bot is under a request flood) stay silent —
+        // the first request already got a confirmation, and we add nothing further to outbound traffic.
+        if (!registrationThrottle.allowNotification(userId)) {
             return;
         }
         List<AllowedUser> admins = accessService.admins();
