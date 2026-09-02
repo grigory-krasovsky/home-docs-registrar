@@ -424,6 +424,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                     .keyboardRow(new InlineKeyboardRow(
                             InlineKeyboardButton.builder().text("✅ Да").callbackData("sec:acc:" + docId).build(),
                             InlineKeyboardButton.builder().text("📁 Другая…").callbackData("sec:pick:" + docId).build()))
+                    .keyboardRow(cancelRow(docId))
                     .build();
             sender.send(chatId, "В какую секцию положить? Предлагаю: 📁 " + suggestion.get().path(), keyboard);
         } else {
@@ -479,6 +480,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             case "sub" -> finishAssign(chatId, messageId, callback, docId, sectionId);
             case "new" -> awaitNewSubsection(chatId, messageId, callback, docId, sectionId);
             case "newtop" -> awaitNewTopLevel(chatId, messageId, callback, docId);
+            case "cancel" -> cancelSectionDialog(chatId, messageId, callback, docId);
             default -> sender.answerCallback(callback.getId(), null);
         }
     }
@@ -550,13 +552,14 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         pendingSectionInput.put(chatId, new PendingSectionInput(docId, topId, editMessageId));
         sender.answerCallback(callback.getId(), null);
-        render(chatId, editMessageId, "Введите название новой подсекции в разделе «" + top.get().getLabel() + "» (или /cancel):", null);
+        render(chatId, editMessageId, "Введите название новой подсекции в разделе «" + top.get().getLabel()
+                + "» (или /cancel):", cancelKeyboard(docId));
     }
 
     private void awaitNewTopLevel(long chatId, Integer editMessageId, CallbackQuery callback, long docId) {
         pendingSectionInput.put(chatId, new PendingSectionInput(docId, null, editMessageId));
         sender.answerCallback(callback.getId(), null);
-        render(chatId, editMessageId, "Введите название нового раздела (или /cancel):", null);
+        render(chatId, editMessageId, "Введите название нового раздела (или /cancel):", cancelKeyboard(docId));
     }
 
     /**
@@ -573,7 +576,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         if (pending.parentId() == null) {
             CatalogSection top = sectionService.getOrCreateTopLevel(name);
             pendingSectionInput.put(chatId, new PendingSectionInput(pending.docId(), top.getId(), editMessageId));
-            render(chatId, editMessageId, "Раздел «" + top.getLabel() + "» готов. Теперь название подсекции внутри него (или /cancel):", null);
+            render(chatId, editMessageId, "Раздел «" + top.getLabel()
+                    + "» готов. Теперь название подсекции внутри него (или /cancel):", cancelKeyboard(pending.docId()));
             return;
         }
         Optional<CatalogSection> parent = sectionService.byId(pending.parentId());
@@ -645,7 +649,29 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
                     .text("⬇ Ещё").callbackData("sec:list:" + (page + 1)).build()));
         }
+        keyboard.keyboardRow(cancelRow(0)); // close the browser
         render(chatId, editMessageId, "Документы (стр. " + (page + 1) + ") — выберите, чтобы задать секцию:", keyboard.build());
+    }
+
+    /** ✖ Отмена: end the whole section scenario — clear its state and close the dialog message. */
+    private void cancelSectionDialog(long chatId, Integer editMessageId, CallbackQuery callback, long docId) {
+        pendingSuggestion.remove(docId);
+        pendingSectionInput.remove(chatId);
+        sender.answerCallback(callback.getId(), "Отменено");
+        render(chatId, editMessageId, "Отменено.", null);
+    }
+
+    private InlineKeyboardButton cancelButton(long docId) {
+        return InlineKeyboardButton.builder().text("✖ Отмена").callbackData("sec:cancel:" + docId).build();
+    }
+
+    private InlineKeyboardRow cancelRow(long docId) {
+        return new InlineKeyboardRow(cancelButton(docId));
+    }
+
+    /** A one-button «✖ Отмена» keyboard for steps that otherwise wait on typed input (new section name). */
+    private InlineKeyboardMarkup cancelKeyboard(long docId) {
+        return InlineKeyboardMarkup.builder().keyboardRow(cancelRow(docId)).build();
     }
 
     private InlineKeyboardMarkup topLevelKeyboard(long docId) {
@@ -656,6 +682,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
                 .text("➕ Новый раздел").callbackData("sec:newtop:" + docId).build()));
+        keyboard.keyboardRow(cancelRow(docId));
         return keyboard.build();
     }
 
@@ -667,8 +694,9 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
                 .text("➕ Новая подсекция").callbackData("sec:new:" + docId + ":" + top.getId()).build()));
-        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
-                .text("⬅ Назад").callbackData("sec:pick:" + docId).build()));
+        keyboard.keyboardRow(new InlineKeyboardRow(
+                InlineKeyboardButton.builder().text("⬅ Назад").callbackData("sec:pick:" + docId).build(),
+                cancelButton(docId)));
         return keyboard.build();
     }
 
