@@ -66,31 +66,18 @@ public class TelegramBotConfig {
     /** Publish the bot's command menu (the "/" button in Telegram); best-effort, never fatal. */
     private void registerCommandMenu(TelegramClient telegramClient) {
         try {
+            // Only argument-free, tap-useful commands go in the "/" menu. /search (plain text already
+            // searches), /get, /section, /rename need an id/query, and /sections is superseded by /browse
+            // — they still work when typed, they're just not menu buttons.
             telegramClient.execute(SetMyCommands.builder()
                     .commands(List.of(
-                            BotCommand.builder()
-                                    .command("search")
-                                    .description("Поиск документов по тексту: /search <запрос>")
-                                    .build(),
-                            BotCommand.builder()
-                                    .command("get")
-                                    .description("Прислать файл документа по номеру: /get <id>")
-                                    .build(),
                             BotCommand.builder()
                                     .command("browse")
                                     .description("Открыть секцию и посмотреть документы в ней")
                                     .build(),
                             BotCommand.builder()
-                                    .command("sections")
-                                    .description("Показать секции картотеки")
-                                    .build(),
-                            BotCommand.builder()
                                     .command("manage_sections")
                                     .description("Список документов: разложить по секциям")
-                                    .build(),
-                            BotCommand.builder()
-                                    .command("section")
-                                    .description("Положить документ в секцию: /section <id>")
                                     .build(),
                             BotCommand.builder()
                                     .command("tokens")
@@ -101,7 +88,7 @@ public class TelegramBotConfig {
                                     .description("Запросить доступ к боту")
                                     .build()))
                     .build());
-            log.info("Telegram command menu set (/search, /get, /browse, /sections, /manage_sections, /section, /tokens, /register)");
+            log.info("Telegram command menu set (/browse, /manage_sections, /tokens, /register)");
         } catch (TelegramApiException e) {
             log.warn("Failed to set the Telegram command menu", e);
         }

@@ -6,6 +6,7 @@ import com.example.homedocsregistrar.domain.AllowedUser;
 import com.example.homedocsregistrar.domain.CatalogSection;
 import com.example.homedocsregistrar.domain.Document;
 import com.example.homedocsregistrar.domain.DocumentPage;
+import com.example.homedocsregistrar.edit.DocumentEditService;
 import com.example.homedocsregistrar.extraction.ApiUsageTracker;
 import com.example.homedocsregistrar.extraction.DocumentExtractionService;
 import com.example.homedocsregistrar.extraction.ExtractedFields;
@@ -67,12 +68,14 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final MediaGroupCollector mediaGroupCollector;
     private final CatalogSectionService sectionService;
     private final SectionSuggestionService suggestionService;
+    private final DocumentEditService editService;
     private final TelegramProperties telegram;
 
-    // Lightweight per-chat dialog state for section filing. Benign if lost on restart: the suggested
-    // path can be re-picked via the buttons, and a pending name can be re-entered via /section <id>.
+    // Lightweight per-chat dialog state. Benign if lost on restart: the suggested path can be re-picked
+    // via the buttons, and a pending name/title can be re-entered via /section or /rename.
     private final Map<Long, SectionSuggestionService.Suggestion> pendingSuggestion = new ConcurrentHashMap<>();
     private final Map<Long, PendingSectionInput> pendingSectionInput = new ConcurrentHashMap<>();
+    private final Map<Long, PendingTitleInput> pendingTitleInput = new ConcurrentHashMap<>();
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
@@ -81,7 +84,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                              AccessService accessService, RegistrationThrottle registrationThrottle,
                              MediaGroupCollector mediaGroupCollector,
                              CatalogSectionService sectionService, SectionSuggestionService suggestionService,
-                             TelegramProperties telegram) {
+                             DocumentEditService editService, TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
@@ -95,6 +98,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.mediaGroupCollector = mediaGroupCollector;
         this.sectionService = sectionService;
         this.suggestionService = suggestionService;
+        this.editService = editService;
         this.telegram = telegram;
     }
 
@@ -103,6 +107,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
      * the id of the prompt message to edit in place when the name arrives (null -> send a new message).
      */
     private record PendingSectionInput(long docId, Long parentId, Integer promptMessageId) {
+    }
+
+    /** A pending typed-in new title: which document to rename, and the prompt message to edit in place. */
+    private record PendingTitleInput(long docId, Integer promptMessageId) {
     }
 
     @Override
@@ -199,6 +207,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         if (data != null && data.startsWith("brw:")) {
             handleBrowseCallback(callback);
+            return;
+        }
+        if (data != null && data.startsWith("title:")) {
+            handleTitleCallback(callback);
             return;
         }
         handleCallback(callback);
@@ -392,7 +404,11 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         int pageCount = document.getPageCount();
         String buttonLabel = pageCount > 1 ? "📎 Открыть (" + pageCount + " стр.)" : "📎 Открыть файл";
-        sender.send(chatId, text, openFileKeyboard(document.getId(), buttonLabel));
+        var savedKeyboard = InlineKeyboardMarkup.builder()
+                .keyboardRow(new InlineKeyboardRow(
+                        openFileButton(document.getId(), buttonLabel), renameButton(document.getId())))
+                .build();
+        sender.send(chatId, text, savedKeyboard);
         offerSection(chatId, document);
     }
 
@@ -417,12 +433,30 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             // any other command cancels the pending input silently and is handled normally below
         }
 
+        // A pending "type a new title" input consumes the next plain message; a command cancels it.
+        PendingTitleInput titleEdit = pendingTitleInput.get(chatId);
+        if (titleEdit != null) {
+            pendingTitleInput.remove(chatId);
+            if (!command.startsWith("/")) {
+                sender.deleteMessage(chatId, messageId); // the typed title disappears; the prompt updates
+                applyTitle(chatId, titleEdit, trimmed);
+                return;
+            }
+            if (command.startsWith("/cancel")) {
+                sender.deleteMessage(chatId, messageId);
+                render(chatId, titleEdit.promptMessageId(), "Отменено.", null);
+                return;
+            }
+        }
+
         if (command.startsWith("/start") || command.startsWith("/help")) {
             sender.send(chatId, helpMessage());
         } else if (command.startsWith("/tokens") || command.startsWith("/usage")) {
             sender.send(chatId, tokensSummary());
         } else if (command.startsWith("/get") || command.startsWith("/doc")) {
             handleGet(chatId, trimmed);
+        } else if (command.startsWith("/rename") || command.startsWith("/title")) {
+            handleRenameCommand(chatId, trimmed);
         } else if (command.startsWith("/browse") || command.startsWith("/catalog")) {
             browseTop(chatId, null);
         } else if (command.startsWith("/manage_sections") || command.startsWith("/manage")) {
@@ -718,7 +752,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         var keyboard = InlineKeyboardMarkup.builder();
         for (CatalogSectionService.DocDigest doc : docPage.items()) {
             keyboard.keyboardRow(new InlineKeyboardRow(
-                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 30))));
+                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 26)),
+                    InlineKeyboardButton.builder().text("✏️").callbackData("title:" + doc.id()).build()));
         }
         if (docPage.hasNext()) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
@@ -738,7 +773,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         var keyboard = InlineKeyboardMarkup.builder();
         for (CatalogSectionService.DocDigest doc : docPage.items()) {
             keyboard.keyboardRow(new InlineKeyboardRow(
-                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 30))));
+                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 26)),
+                    InlineKeyboardButton.builder().text("✏️").callbackData("title:" + doc.id()).build()));
         }
         if (docPage.hasNext()) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
@@ -781,6 +817,100 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         Long value = parseLong(parts[idx]);
         return value == null ? 0 : value.intValue();
+    }
+
+    // ----- edit a document's title (✏️ button after save / in /browse, or /rename <id>) -----
+
+    /** A tapped ✏️: begin a title edit (title:&lt;docId&gt;) or cancel it (title:cancel:&lt;docId&gt;). */
+    private void handleTitleCallback(CallbackQuery callback) {
+        String[] parts = callback.getData().split(":");
+        var message = callback.getMessage();
+        Long chatId = message == null ? null : message.getChatId();
+        Integer messageId = message == null ? null : message.getMessageId();
+        if (chatId == null) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        if (parts.length > 2 && parts[1].equals("cancel")) { // title:cancel:<docId>
+            pendingTitleInput.remove(chatId);
+            sender.answerCallback(callback.getId(), "Отменено");
+            render(chatId, messageId, "Отменено.", null);
+            return;
+        }
+        Long docId = parts.length > 1 ? parseLong(parts[1]) : null;
+        if (docId == null) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        startTitleEdit(chatId, callback, docId);
+    }
+
+    /** /rename &lt;id&gt; (alias /title): begin a title edit for a document by id. */
+    private void handleRenameCommand(long chatId, String text) {
+        Long id = parseDocId(text);
+        if (id == null) {
+            sender.send(chatId, "Укажите номер документа, например: /rename 42");
+            return;
+        }
+        if (retrievalService.byId(id).isEmpty()) {
+            sender.send(chatId, "Документ id=" + id + " не найден.");
+            return;
+        }
+        startTitleEdit(chatId, null, id);
+    }
+
+    /**
+     * Prompt for a new title as a FRESH message (so the save summary / browse list stays), and remember
+     * its id so the typed title edits that message in place. Clears any pending section-name input.
+     */
+    private void startTitleEdit(long chatId, CallbackQuery callback, long docId) {
+        Optional<Document> document = retrievalService.byId(docId);
+        if (document.isEmpty()) {
+            if (callback != null) {
+                sender.answerCallback(callback.getId(), "Документ не найден.");
+            } else {
+                sender.send(chatId, "Документ #" + docId + " не найден.");
+            }
+            return;
+        }
+        if (callback != null) {
+            sender.answerCallback(callback.getId(), null);
+        }
+        pendingSectionInput.remove(chatId);
+        Integer promptId = sender.send(chatId, titlePrompt(document.get()), cancelTitleKeyboard(docId));
+        pendingTitleInput.put(chatId, new PendingTitleInput(docId, promptId));
+    }
+
+    /** Apply a typed-in title and confirm in place (editing the prompt message). */
+    private void applyTitle(long chatId, PendingTitleInput pending, String title) {
+        Integer editMessageId = pending.promptMessageId();
+        if (title.isBlank()) {
+            render(chatId, editMessageId, "Пустое название — отменил.", null);
+            return;
+        }
+        Optional<Document> updated = editService.renameTitle(pending.docId(), title);
+        if (updated.isEmpty()) {
+            render(chatId, editMessageId, "Документ #" + pending.docId() + " не найден.", null);
+            return;
+        }
+        render(chatId, editMessageId, "✏️ Название документа #" + pending.docId() + " → " + updated.get().getTitle(), null);
+    }
+
+    private String titlePrompt(Document document) {
+        String current = document.getTitle();
+        String now = current == null || current.isBlank() ? "—" : current;
+        return "Название документа #" + document.getId() + ": " + now + "\nВведите новое название (или /cancel):";
+    }
+
+    private InlineKeyboardMarkup cancelTitleKeyboard(long docId) {
+        return InlineKeyboardMarkup.builder()
+                .keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                        .text("✖ Отмена").callbackData("title:cancel:" + docId).build()))
+                .build();
+    }
+
+    private InlineKeyboardButton renameButton(long docId) {
+        return InlineKeyboardButton.builder().text("✏️ Название").callbackData("title:" + docId).build();
     }
 
     /** /manage_sections — open the document browser at the first page (a fresh message). */
@@ -932,12 +1062,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
     private String helpMessage() {
         return "Пришлите документ как файл (вложение) — я распознаю, сохраню и предложу секцию.\n"
-                + "Поиск: просто напишите слова (или /search <запрос>).\n"
-                + "• /get <id> — прислать сохранённый файл документа\n"
+                + "Поиск: просто напишите слова.\n"
                 + "• /browse — открыть секцию и посмотреть документы в ней\n"
-                + "• /sections — показать секции картотеки\n"
-                + "• /manage_sections — список документов: разложить по секциям\n"
-                + "• /section <id> — положить документ в секцию (или сменить)\n"
+                + "• /manage_sections — разложить документы по секциям\n"
+                + "• /rename <id> — изменить название документа (или кнопкой ✏️)\n"
                 + "• /tokens — сколько токенов израсходовано на распознавание";
     }
 
@@ -994,13 +1122,6 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             anySent |= sent != null;
         }
         return anySent ? null : "Для документа id=" + id + " не удалось отправить файлы. Попробуйте позже.";
-    }
-
-    /** A one-button inline keyboard that opens document {@code id}'s file. */
-    private InlineKeyboardMarkup openFileKeyboard(long id, String label) {
-        return InlineKeyboardMarkup.builder()
-                .keyboardRow(new InlineKeyboardRow(openFileButton(id, label)))
-                .build();
     }
 
     private InlineKeyboardButton openFileButton(long id, String label) {
