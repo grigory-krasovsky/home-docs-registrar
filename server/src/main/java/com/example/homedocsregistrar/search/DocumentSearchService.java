@@ -27,15 +27,29 @@ public class DocumentSearchService {
         this.expansion = expansion;
     }
 
-    /** Top matches for a free-text query (with query expansion); empty result for a blank query. */
+    /**
+     * Top matches for a free-text query. Precision first: try the literal query and, only if it finds
+     * nothing, expand it into related terms and search again (so a specific query like «паспорт» isn't
+     * polluted by sibling document types, while «свадьба»/«личные документы» still match by meaning).
+     * Empty result for a blank query.
+     */
     public SearchResult search(String query) {
         if (query == null || query.isBlank()) {
             return new SearchResult(List.of(), List.of());
         }
         String original = query.trim();
+
+        List<Document> literalHits = documents.search(buildOrQuery(original, List.of()), MAX_RESULTS);
+        if (!literalHits.isEmpty()) {
+            return new SearchResult(literalHits, List.of());
+        }
+
         List<String> related = expansion.relatedTerms(original);
-        List<Document> hits = documents.search(buildOrQuery(original, related), MAX_RESULTS);
-        return new SearchResult(hits, related);
+        if (related.isEmpty()) {
+            return new SearchResult(List.of(), List.of());
+        }
+        List<Document> expandedHits = documents.search(buildOrQuery(original, related), MAX_RESULTS);
+        return new SearchResult(expandedHits, related);
     }
 
     /**
