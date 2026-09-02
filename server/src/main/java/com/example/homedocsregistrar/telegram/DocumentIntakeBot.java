@@ -117,6 +117,12 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             }
             Message message = update.getMessage();
             long chatId = message.getChatId();
+            // Operate only in private chats. In a group the reply (and any sent file) goes to the whole
+            // chat, while the allow-list only gates the sender — so a document could reach non-allowed
+            // members. Silently ignore anything outside a one-on-one chat. See isPrivateChat.
+            if (!isPrivateChat(chatId)) {
+                return;
+            }
             User from = message.getFrom();
             Long fromId = userId(from);
 
@@ -166,6 +172,14 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     }
 
     private void handleCallbackQuery(CallbackQuery callback) {
+        // Same private-chat restriction as for messages: a tapped button in a group would send the file
+        // into that group. Every button the bot issues lives in a one-on-one chat, so ignore the rest.
+        var callbackMessage = callback.getMessage();
+        Long callbackChatId = callbackMessage == null ? null : callbackMessage.getChatId();
+        if (callbackChatId == null || !isPrivateChat(callbackChatId)) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
         String data = callback.getData();
         if (data != null && (data.startsWith("approve:") || data.startsWith("reject:"))) {
             handleApproval(callback);
@@ -236,6 +250,16 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
     private static Long userId(User from) {
         return from == null ? null : from.getId();
+    }
+
+    /**
+     * The bot operates only in private (one-on-one) chats. In Telegram a private chat's id equals the
+     * user's own id and is positive, whereas groups, supergroups and channels have negative ids.
+     * Restricting to private chats stops a document or search result from ever landing in a shared chat
+     * where a non-allowed member could read it — the allow-list gates the sender, not the whole audience.
+     */
+    private static boolean isPrivateChat(long chatId) {
+        return chatId > 0;
     }
 
     /** Human-readable name for logs/requests: first+last name, falling back to @username or the id. */

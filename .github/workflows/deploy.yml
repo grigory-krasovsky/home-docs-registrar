@@ -65,10 +65,24 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
+          command_timeout: 15m
           script_stop: true
           script: |
             cd ~/home-docs-registrar
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             export SERVER_IMAGE=${{ env.IMAGE }}:${{ github.sha }}
-            docker compose pull
+            # ghcr.io from this VPS occasionally fails the TLS handshake; retry login+pull with backoff
+            # so a transient timeout doesn't fail the whole deploy. A persistent failure still exits 1.
+            attempt=0; max=5
+            until [ "$attempt" -ge "$max" ]; do
+              if echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin && docker compose pull; then
+                break
+              fi
+              attempt=$((attempt + 1))
+              echo "GHCR login/pull failed (attempt $attempt/$max) — retrying in $((attempt * 15))s…"
+              sleep $((attempt * 15))
+            done
+            if [ "$attempt" -ge "$max" ]; then
+              echo "ERROR: could not reach ghcr.io after $max attempts (TLS handshake timeout). This is a VPS→ghcr.io network issue, not the build."
+              exit 1
+            fi
             docker compose up -d
