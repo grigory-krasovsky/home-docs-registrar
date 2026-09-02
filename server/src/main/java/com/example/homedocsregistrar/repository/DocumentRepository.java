@@ -2,6 +2,8 @@ package com.example.homedocsregistrar.repository;
 
 import com.example.homedocsregistrar.domain.BackupStatus;
 import com.example.homedocsregistrar.domain.Document;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -21,6 +23,17 @@ public interface DocumentRepository extends JpaRepository<Document, Long> {
     /** Load a document with its pages eagerly (open-in-view is off, so callers can send all files). */
     @EntityGraph(attributePaths = "pages")
     Optional<Document> findWithPagesById(Long id);
+
+    /** Documents filed in a given section (leaf), newest first — for the /browse catalog view. */
+    Page<Document> findBySection_IdOrderByCreatedAtDesc(Long sectionId, Pageable pageable);
+
+    /** How many documents are filed in a section — for the subsection button counts. */
+    long countBySection_Id(Long sectionId);
+
+    /** Documents not filed into any section yet — the «✱ Без секции» bucket in /browse. */
+    Page<Document> findBySectionIsNullOrderByCreatedAtDesc(Pageable pageable);
+
+    long countBySectionIsNull();
 
     /**
      * Russian full-text search over the transcribed text and key fields, ranked by relevance. Uses the

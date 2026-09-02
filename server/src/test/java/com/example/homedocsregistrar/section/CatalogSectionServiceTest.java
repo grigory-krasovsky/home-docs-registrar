@@ -117,4 +117,34 @@ class CatalogSectionServiceTest {
         assertThat(assignment.get().sectionPath()).isEqualTo("Общая / Авто");
         assertThat(service.currentSectionPath(doc.getId())).contains("Общая / Авто");
     }
+
+    @Test
+    void browseListsDocumentsBySectionUnfiledAndCounts() {
+        CatalogSection obshaya = sections.save(new CatalogSection(null, "Общая"));
+        CatalogSection avto = sections.save(new CatalogSection("Авто", obshaya));
+
+        Document filed = new Document();
+        filed.setTitle("Страховка");
+        filed.setContentHash("br-1");
+        filed.setSection(avto);
+        documents.save(filed);
+
+        Document unfiled = new Document();
+        unfiled.setTitle("Ничей чек");
+        unfiled.setContentHash("br-2");
+        documents.save(unfiled);
+
+        assertThat(service.countInSection(avto.getId())).isEqualTo(1);
+        assertThat(service.countUnfiled()).isEqualTo(1);
+        assertThat(service.documentsInSection(avto.getId(), 0, 8).items())
+                .extracting(CatalogSectionService.DocDigest::title).containsExactly("Страховка");
+        assertThat(service.unfiledDocuments(0, 8).items())
+                .extracting(CatalogSectionService.DocDigest::title).containsExactly("Ничей чек");
+        assertThat(service.sectionPath(avto.getId())).contains("Общая / Авто");
+
+        var counts = service.subsectionCounts(obshaya.getId());
+        assertThat(counts).hasSize(1);
+        assertThat(counts.get(0).label()).isEqualTo("Авто");
+        assertThat(counts.get(0).count()).isEqualTo(1L);
+    }
 }

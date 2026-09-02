@@ -197,6 +197,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             handleSectionCallback(callback);
             return;
         }
+        if (data != null && data.startsWith("brw:")) {
+            handleBrowseCallback(callback);
+            return;
+        }
         handleCallback(callback);
     }
 
@@ -419,6 +423,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.send(chatId, tokensSummary());
         } else if (command.startsWith("/get") || command.startsWith("/doc")) {
             handleGet(chatId, trimmed);
+        } else if (command.startsWith("/browse") || command.startsWith("/catalog")) {
+            browseTop(chatId, null);
         } else if (command.startsWith("/manage_sections") || command.startsWith("/manage")) {
             handleManageSections(chatId);
         } else if (command.startsWith("/sections")) { // must precede /section (a prefix of /sections)
@@ -659,6 +665,124 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         promptTopLevel(chatId, null, id);
     }
 
+    // ----- browse the catalog: open a section and see the documents filed in it (/browse) -----
+
+    /** /browse — top level: pick a section (owner) or the «✱ Без секции» bucket. */
+    private void browseTop(long chatId, Integer editMessageId) {
+        List<CatalogSection> tops = sectionService.topLevel();
+        long unfiled = sectionService.countUnfiled();
+        if (tops.isEmpty() && unfiled == 0) {
+            render(chatId, editMessageId, "Пока нет документов.", null);
+            return;
+        }
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (CatalogSection top : tops) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("📂 " + top.getLabel()).callbackData("brw:top:" + top.getId()).build()));
+        }
+        if (unfiled > 0) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("✱ Без секции (" + unfiled + ")").callbackData("brw:none:0").build()));
+        }
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("✖ Закрыть").callbackData("brw:close").build()));
+        render(chatId, editMessageId, "📁 Картотека — выберите раздел:", keyboard.build());
+    }
+
+    /** Subsections of a top-level section, each with its document count. */
+    private void browseSubsections(long chatId, Integer editMessageId, Long topId) {
+        Optional<CatalogSection> top = sectionService.byId(topId);
+        if (top.isEmpty()) {
+            render(chatId, editMessageId, "Раздел не найден.", null);
+            return;
+        }
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (CatalogSectionService.SectionCount sub : sectionService.subsectionCounts(topId)) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("📄 " + sub.label() + " (" + sub.count() + ")")
+                    .callbackData("brw:sub:" + topId + ":" + sub.id() + ":0").build()));
+        }
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("⬅ Назад").callbackData("brw:home").build()));
+        render(chatId, editMessageId, "📂 " + top.get().getLabel() + " — выберите подсекцию:", keyboard.build());
+    }
+
+    /** Documents filed in a leaf subsection, paged; each button opens the file (get:&lt;id&gt;). */
+    private void browseDocuments(long chatId, Integer editMessageId, Long topId, Long subId, int page) {
+        if (subId == null) {
+            render(chatId, editMessageId, "Секция не найдена.", null);
+            return;
+        }
+        String path = sectionService.sectionPath(subId).orElse("секция");
+        CatalogSectionService.DocPage docPage = sectionService.documentsInSection(subId, page, DOC_PAGE_SIZE);
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (CatalogSectionService.DocDigest doc : docPage.items()) {
+            keyboard.keyboardRow(new InlineKeyboardRow(
+                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 30))));
+        }
+        if (docPage.hasNext()) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("⬇ Ещё").callbackData("brw:sub:" + topId + ":" + subId + ":" + (page + 1)).build()));
+        }
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("⬅ Назад").callbackData("brw:top:" + topId).build()));
+        String text = docPage.items().isEmpty()
+                ? "📄 " + path + " — пусто."
+                : "📄 " + path + " — документы (нажмите, чтобы открыть):";
+        render(chatId, editMessageId, text, keyboard.build());
+    }
+
+    /** The «✱ Без секции» bucket: documents not filed anywhere yet, paged. */
+    private void browseUnfiled(long chatId, Integer editMessageId, int page) {
+        CatalogSectionService.DocPage docPage = sectionService.unfiledDocuments(page, DOC_PAGE_SIZE);
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (CatalogSectionService.DocDigest doc : docPage.items()) {
+            keyboard.keyboardRow(new InlineKeyboardRow(
+                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 30))));
+        }
+        if (docPage.hasNext()) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("⬇ Ещё").callbackData("brw:none:" + (page + 1)).build()));
+        }
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("⬅ Назад").callbackData("brw:home").build()));
+        String text = docPage.items().isEmpty() ? "Без секции — пусто." : "✱ Без секции (нажмите, чтобы открыть):";
+        render(chatId, editMessageId, text, keyboard.build());
+    }
+
+    /** Route a brw:* callback: home | top:&lt;id&gt; | sub:&lt;topId&gt;:&lt;subId&gt;:&lt;page&gt; | none:&lt;page&gt; | close. */
+    private void handleBrowseCallback(CallbackQuery callback) {
+        String[] parts = callback.getData().split(":");
+        var message = callback.getMessage();
+        Long chatId = message == null ? null : message.getChatId();
+        Integer messageId = message == null ? null : message.getMessageId();
+        if (chatId == null) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        sender.answerCallback(callback.getId(), null);
+        switch (parts[1]) {
+            case "home" -> browseTop(chatId, messageId);
+            case "top" -> browseSubsections(chatId, messageId, parts.length > 2 ? parseLong(parts[2]) : null);
+            case "sub" -> browseDocuments(chatId, messageId,
+                    parts.length > 2 ? parseLong(parts[2]) : null,
+                    parts.length > 3 ? parseLong(parts[3]) : null,
+                    parsePage(parts, 4));
+            case "none" -> browseUnfiled(chatId, messageId, parsePage(parts, 2));
+            case "close" -> render(chatId, messageId, "Закрыто.", null);
+            default -> { }
+        }
+    }
+
+    /** Parse a page number from callback parts at {@code idx}; 0 if absent/unparseable. */
+    private static int parsePage(String[] parts, int idx) {
+        if (parts.length <= idx) {
+            return 0;
+        }
+        Long value = parseLong(parts[idx]);
+        return value == null ? 0 : value.intValue();
+    }
+
     /** /manage_sections — open the document browser at the first page (a fresh message). */
     private void handleManageSections(long chatId) {
         promptDocumentList(chatId, null, 0);
@@ -810,6 +934,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         return "Пришлите документ как файл (вложение) — я распознаю, сохраню и предложу секцию.\n"
                 + "Поиск: просто напишите слова (или /search <запрос>).\n"
                 + "• /get <id> — прислать сохранённый файл документа\n"
+                + "• /browse — открыть секцию и посмотреть документы в ней\n"
                 + "• /sections — показать секции картотеки\n"
                 + "• /manage_sections — список документов: разложить по секциям\n"
                 + "• /section <id> — положить документ в секцию (или сменить)\n"

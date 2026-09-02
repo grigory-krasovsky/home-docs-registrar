@@ -117,6 +117,49 @@ public class CatalogSectionService {
         return new DocPage(items, slice.hasNext());
     }
 
+    /** Subsections of a top-level section with their document counts — for the /browse view. */
+    @Transactional(readOnly = true)
+    public List<SectionCount> subsectionCounts(long parentId) {
+        return sections.findById(parentId)
+                .map(parent -> sections.findByParentOrderByIdAsc(parent).stream()
+                        .map(sub -> new SectionCount(sub.getId(), sub.getLabel(), documents.countBySection_Id(sub.getId())))
+                        .toList())
+                .orElseGet(List::of);
+    }
+
+    /** A page of documents filed in a section (newest first) for /browse. */
+    @Transactional(readOnly = true)
+    public DocPage documentsInSection(long sectionId, int page, int size) {
+        return toDocPage(documents.findBySection_IdOrderByCreatedAtDesc(sectionId, PageRequest.of(page, size)));
+    }
+
+    /** A page of documents not filed into any section — the «✱ Без секции» bucket. */
+    @Transactional(readOnly = true)
+    public DocPage unfiledDocuments(int page, int size) {
+        return toDocPage(documents.findBySectionIsNullOrderByCreatedAtDesc(PageRequest.of(page, size)));
+    }
+
+    public long countInSection(long sectionId) {
+        return documents.countBySection_Id(sectionId);
+    }
+
+    public long countUnfiled() {
+        return documents.countBySectionIsNull();
+    }
+
+    /** The «Раздел / Подсекция» path of a section (loaded in-tx so the lazy parent resolves). */
+    @Transactional(readOnly = true)
+    public Optional<String> sectionPath(long sectionId) {
+        return sections.findById(sectionId).map(CatalogSection::path);
+    }
+
+    private static DocPage toDocPage(Page<Document> slice) {
+        List<DocDigest> items = slice.getContent().stream()
+                .map(doc -> new DocDigest(doc.getId(), shortTitle(doc), null))
+                .toList();
+        return new DocPage(items, slice.hasNext());
+    }
+
     /** Best short name for a document: title, else type, else a generic label. */
     private static String shortTitle(Document doc) {
         if (doc.getTitle() != null && !doc.getTitle().isBlank()) {
@@ -138,5 +181,9 @@ public class CatalogSectionService {
 
     /** A page of the document browser plus whether a next page exists. */
     public record DocPage(List<DocDigest> items, boolean hasNext) {
+    }
+
+    /** A subsection with how many documents are filed in it — for the /browse buttons. */
+    public record SectionCount(long id, String label, long count) {
     }
 }
