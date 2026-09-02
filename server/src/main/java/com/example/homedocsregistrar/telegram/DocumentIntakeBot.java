@@ -2,6 +2,7 @@ package com.example.homedocsregistrar.telegram;
 
 import com.example.homedocsregistrar.access.AccessService;
 import com.example.homedocsregistrar.domain.AllowedUser;
+import com.example.homedocsregistrar.domain.CatalogSection;
 import com.example.homedocsregistrar.domain.Document;
 import com.example.homedocsregistrar.domain.DocumentPage;
 import com.example.homedocsregistrar.extraction.ApiUsageTracker;
@@ -14,6 +15,8 @@ import com.example.homedocsregistrar.intake.DocumentIntakeService.IncomingPage;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
 import com.example.homedocsregistrar.retrieval.DocumentRetrievalService;
 import com.example.homedocsregistrar.search.DocumentSearchService;
+import com.example.homedocsregistrar.section.CatalogSectionService;
+import com.example.homedocsregistrar.section.SectionSuggestionService;
 import com.example.homedocsregistrar.telegram.MediaGroupCollector.BufferedPage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,7 +35,9 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Receives Telegram updates (long polling) and drives document intake: a document sent as a file is
@@ -55,13 +60,21 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final UsageEstimator usageEstimator;
     private final AccessService accessService;
     private final MediaGroupCollector mediaGroupCollector;
+    private final CatalogSectionService sectionService;
+    private final SectionSuggestionService suggestionService;
     private final TelegramProperties telegram;
+
+    // Lightweight per-chat dialog state for section filing. Benign if lost on restart: the suggested
+    // path can be re-picked via the buttons, and a pending name can be re-entered via /section <id>.
+    private final Map<Long, SectionSuggestionService.Suggestion> pendingSuggestion = new ConcurrentHashMap<>();
+    private final Map<Long, PendingSectionInput> pendingSectionInput = new ConcurrentHashMap<>();
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
                              DocumentRetrievalService retrievalService, DocumentSearchService searchService,
                              ApiUsageTracker usageTracker, UsageEstimator usageEstimator,
                              AccessService accessService, MediaGroupCollector mediaGroupCollector,
+                             CatalogSectionService sectionService, SectionSuggestionService suggestionService,
                              TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
@@ -73,7 +86,13 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.usageEstimator = usageEstimator;
         this.accessService = accessService;
         this.mediaGroupCollector = mediaGroupCollector;
+        this.sectionService = sectionService;
+        this.suggestionService = suggestionService;
         this.telegram = telegram;
+    }
+
+    /** A pending typed-in section name: which document to file, and the parent (null = a new top-level). */
+    private record PendingSectionInput(long docId, Long parentId) {
     }
 
     @Override
@@ -146,6 +165,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         if (!accessService.isAllowed(userId(callback.getFrom()))) {
             sender.answerCallback(callback.getId(), "Доступ закрыт.");
+            return;
+        }
+        if (data != null && data.startsWith("sec:")) {
+            handleSectionCallback(callback);
             return;
         }
         handleCallback(callback);
@@ -310,29 +333,49 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
     /** Common reply after an intake: dedupe notice, or the saved summary + token status + open button. */
     private void replySaved(long chatId, IntakeResult result, Extraction extraction) {
+        Document document = result.document();
         if (result.duplicate()) {
-            sender.send(chatId, "Этот документ уже сохранён (id=" + result.document().getId() + ").");
+            sender.send(chatId, "Этот документ уже сохранён (id=" + document.getId() + ").");
+            offerSectionIfUnfiled(chatId, document);
             return;
         }
         ExtractedFields fields = extraction == null ? null : extraction.fields();
-        String text = summary(result.document(), fields);
+        String text = summary(document, fields);
         if (extraction != null) {
             text += "\n\n" + tokenStatus(extraction);
         }
-        int pageCount = result.document().getPageCount();
+        int pageCount = document.getPageCount();
         String buttonLabel = pageCount > 1 ? "📎 Открыть (" + pageCount + " стр.)" : "📎 Открыть файл";
-        sender.send(chatId, text, openFileKeyboard(result.document().getId(), buttonLabel));
+        sender.send(chatId, text, openFileKeyboard(document.getId(), buttonLabel));
+        offerSection(chatId, document);
     }
 
     private void handleText(long chatId, String text) {
         String trimmed = text.strip();
         String command = trimmed.toLowerCase(Locale.ROOT);
+
+        // A pending "type a new section name" input consumes the next plain message; a command cancels it.
+        PendingSectionInput pending = pendingSectionInput.get(chatId);
+        if (pending != null) {
+            pendingSectionInput.remove(chatId);
+            if (!command.startsWith("/")) {
+                createSectionFromInput(chatId, pending, trimmed);
+                return;
+            }
+        }
+
         if (command.startsWith("/start") || command.startsWith("/help")) {
             sender.send(chatId, helpMessage());
         } else if (command.startsWith("/tokens") || command.startsWith("/usage")) {
             sender.send(chatId, tokensSummary());
         } else if (command.startsWith("/get") || command.startsWith("/doc")) {
             handleGet(chatId, trimmed);
+        } else if (command.startsWith("/sections")) { // must precede /section (a prefix of /sections)
+            handleSectionsList(chatId);
+        } else if (command.startsWith("/section")) {
+            handleSectionReassign(chatId, trimmed);
+        } else if (command.startsWith("/cancel")) {
+            sender.send(chatId, "Отменено.");
         } else if (command.startsWith("/search") || command.startsWith("/find")) {
             handleSearch(chatId, argument(trimmed));
         } else if (command.startsWith("/")) {
@@ -341,6 +384,236 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             // Plain text is treated as a search query — search is the main use case.
             handleSearch(chatId, trimmed);
         }
+    }
+
+    // ----- card-catalog section filing -----
+
+    /** After saving, propose a subsection (or show the picker) so the user files the document. */
+    private void offerSection(long chatId, Document document) {
+        List<CatalogSection> leaves = sectionService.leaves();
+        if (leaves.isEmpty()) {
+            return; // catalog not set up yet — nothing to file into
+        }
+        long docId = document.getId();
+        Optional<SectionSuggestionService.Suggestion> suggestion = suggestionService.isEnabled()
+                ? suggestionService.suggest(documentSummaryForSection(document), leaves)
+                : Optional.empty();
+        if (suggestion.isPresent()) {
+            pendingSuggestion.put(docId, suggestion.get());
+            var keyboard = InlineKeyboardMarkup.builder()
+                    .keyboardRow(new InlineKeyboardRow(
+                            InlineKeyboardButton.builder().text("✅ Да").callbackData("sec:acc:" + docId).build(),
+                            InlineKeyboardButton.builder().text("📁 Другая…").callbackData("sec:pick:" + docId).build()))
+                    .build();
+            sender.send(chatId, "В какую секцию положить? Предлагаю: 📁 " + suggestion.get().path(), keyboard);
+        } else {
+            sender.send(chatId, "В какую секцию положить документ #" + docId + "?", topLevelKeyboard(docId));
+        }
+    }
+
+    /** For a re-sent (duplicate) document: show its section, or offer the picker if it isn't filed yet. */
+    private void offerSectionIfUnfiled(long chatId, Document document) {
+        Optional<String> current = sectionService.currentSectionPath(document.getId());
+        if (current.isPresent()) {
+            sender.send(chatId, "📁 Уже в секции: " + current.get());
+            return;
+        }
+        if (sectionService.topLevel().isEmpty()) {
+            return;
+        }
+        sender.send(chatId, "Документ пока без секции. Выбрать?", topLevelKeyboard(document.getId()));
+    }
+
+    /** Route a sec:* callback: {@code sec:<action>:<docId>[:<sectionId>]}. */
+    private void handleSectionCallback(CallbackQuery callback) {
+        String[] parts = callback.getData().split(":");
+        Long chatId = callback.getMessage() == null ? null : callback.getMessage().getChatId();
+        Long docId = parts.length > 2 ? parseLong(parts[2]) : null;
+        if (chatId == null || docId == null) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        Long sectionId = parts.length > 3 ? parseLong(parts[3]) : null;
+        switch (parts[1]) {
+            case "acc" -> acceptSuggestion(chatId, callback, docId);
+            case "pick" -> {
+                sender.answerCallback(callback.getId(), null);
+                promptTopLevel(chatId, docId);
+            }
+            case "top" -> {
+                sender.answerCallback(callback.getId(), null);
+                promptSubsections(chatId, docId, sectionId);
+            }
+            case "sub" -> finishAssign(chatId, callback, docId, sectionId);
+            case "new" -> awaitNewSubsection(chatId, callback, docId, sectionId);
+            case "newtop" -> awaitNewTopLevel(chatId, callback, docId);
+            default -> sender.answerCallback(callback.getId(), null);
+        }
+    }
+
+    /** ✅ accept: resolve the suggested path (creating the subsection if new) and file the document. */
+    private void acceptSuggestion(long chatId, CallbackQuery callback, long docId) {
+        SectionSuggestionService.Suggestion suggestion = pendingSuggestion.get(docId);
+        if (suggestion == null) { // lost (e.g. restart) — fall back to the picker
+            sender.answerCallback(callback.getId(), null);
+            promptTopLevel(chatId, docId);
+            return;
+        }
+        Optional<CatalogSection> leaf = sectionService.resolveSuggestion(suggestion);
+        if (leaf.isEmpty()) {
+            sender.answerCallback(callback.getId(), "Не удалось создать секцию.");
+            return;
+        }
+        finishAssign(chatId, callback, docId, leaf.get().getId());
+    }
+
+    private void promptTopLevel(long chatId, long docId) {
+        if (sectionService.topLevel().isEmpty()) {
+            sender.send(chatId, "Секции ещё не заведены.");
+            return;
+        }
+        sender.send(chatId, "Выберите раздел (документ #" + docId + "):", topLevelKeyboard(docId));
+    }
+
+    private void promptSubsections(long chatId, long docId, Long topId) {
+        Optional<CatalogSection> top = sectionService.byId(topId);
+        if (top.isEmpty()) {
+            sender.send(chatId, "Раздел не найден.");
+            return;
+        }
+        sender.send(chatId, "«" + top.get().getLabel() + "» — выберите подсекцию:", subKeyboard(docId, top.get()));
+    }
+
+    /** A tapped leaf (or the resolved suggestion): file the document and confirm. */
+    private void finishAssign(long chatId, CallbackQuery callback, long docId, Long sectionId) {
+        if (sectionId == null) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        Optional<CatalogSectionService.Assignment> assignment = sectionService.assign(docId, sectionId);
+        if (assignment.isEmpty()) {
+            sender.answerCallback(callback.getId(), "Документ или секция не найдены.");
+            return;
+        }
+        pendingSuggestion.remove(docId);
+        pendingSectionInput.remove(chatId);
+        sender.answerCallback(callback.getId(), "Готово");
+        sender.send(chatId, "📁 Секция: " + assignment.get().sectionPath() + " ✅ (документ #" + docId + ")");
+    }
+
+    private void awaitNewSubsection(long chatId, CallbackQuery callback, long docId, Long topId) {
+        Optional<CatalogSection> top = sectionService.byId(topId);
+        if (top.isEmpty()) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        pendingSectionInput.put(chatId, new PendingSectionInput(docId, topId));
+        sender.answerCallback(callback.getId(), null);
+        sender.send(chatId, "Введите название новой подсекции в разделе «" + top.get().getLabel() + "» (или /cancel):");
+    }
+
+    private void awaitNewTopLevel(long chatId, CallbackQuery callback, long docId) {
+        pendingSectionInput.put(chatId, new PendingSectionInput(docId, null));
+        sender.answerCallback(callback.getId(), null);
+        sender.send(chatId, "Введите название нового раздела (или /cancel):");
+    }
+
+    /**
+     * Handle a typed-in section name: create a top-level (then ask for its first subsection, since
+     * documents are filed into subsections) or a subsection (with near-duplicate merge) and file the doc.
+     */
+    private void createSectionFromInput(long chatId, PendingSectionInput pending, String name) {
+        if (name.isBlank()) {
+            sender.send(chatId, "Пустое название — отменил.");
+            return;
+        }
+        if (pending.parentId() == null) {
+            CatalogSection top = sectionService.getOrCreateTopLevel(name);
+            pendingSectionInput.put(chatId, new PendingSectionInput(pending.docId(), top.getId()));
+            sender.send(chatId, "Раздел «" + top.getLabel() + "» готов. Теперь название подсекции внутри него (или /cancel):");
+            return;
+        }
+        Optional<CatalogSection> parent = sectionService.byId(pending.parentId());
+        if (parent.isEmpty()) {
+            sender.send(chatId, "Раздел не найден. Повторите: /section " + pending.docId());
+            return;
+        }
+        CatalogSection sub = sectionService.getOrCreateSubsection(parent.get(), name);
+        Optional<CatalogSectionService.Assignment> assignment = sectionService.assign(pending.docId(), sub.getId());
+        if (assignment.isEmpty()) {
+            sender.send(chatId, "Документ #" + pending.docId() + " не найден.");
+            return;
+        }
+        sender.send(chatId, "📁 Секция: " + assignment.get().sectionPath() + " ✅ (документ #" + pending.docId() + ")");
+    }
+
+    /** /sections — show the whole catalog tree. */
+    private void handleSectionsList(long chatId) {
+        List<CatalogSection> tops = sectionService.topLevel();
+        if (tops.isEmpty()) {
+            sender.send(chatId, "Секции ещё не заведены.");
+            return;
+        }
+        StringBuilder text = new StringBuilder("Секции картотеки:");
+        for (CatalogSection top : tops) {
+            text.append("\n\n📂 ").append(top.getLabel());
+            for (CatalogSection sub : sectionService.subsections(top)) {
+                text.append("\n   • ").append(sub.getLabel());
+            }
+        }
+        sender.send(chatId, text.toString());
+    }
+
+    /** /section &lt;id&gt; — (re)assign the section of an existing document via the picker. */
+    private void handleSectionReassign(long chatId, String text) {
+        Long id = parseDocId(text);
+        if (id == null) {
+            sender.send(chatId, "Укажите номер документа, например: /section 42");
+            return;
+        }
+        if (retrievalService.byId(id).isEmpty()) {
+            sender.send(chatId, "Документ id=" + id + " не найден.");
+            return;
+        }
+        promptTopLevel(chatId, id);
+    }
+
+    private InlineKeyboardMarkup topLevelKeyboard(long docId) {
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (CatalogSection top : sectionService.topLevel()) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("📂 " + top.getLabel()).callbackData("sec:top:" + docId + ":" + top.getId()).build()));
+        }
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("➕ Новый раздел").callbackData("sec:newtop:" + docId).build()));
+        return keyboard.build();
+    }
+
+    private InlineKeyboardMarkup subKeyboard(long docId, CatalogSection top) {
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (CatalogSection sub : sectionService.subsections(top)) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("📄 " + sub.getLabel()).callbackData("sec:sub:" + docId + ":" + sub.getId()).build()));
+        }
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("➕ Новая подсекция").callbackData("sec:new:" + docId + ":" + top.getId()).build()));
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("⬅ Назад").callbackData("sec:pick:" + docId).build()));
+        return keyboard.build();
+    }
+
+    /** Compact document summary fed to the section suggester (normalized fields + a slice of the text). */
+    private String documentSummaryForSection(Document document) {
+        StringBuilder text = new StringBuilder();
+        append(text, "Тип", document.getDocType());
+        append(text, "Название", document.getTitle());
+        append(text, "Контрагент", document.getCounterparty());
+        append(text, "№", document.getDocumentNumber());
+        String body = document.getOcrText();
+        if (body != null && !body.isBlank()) {
+            text.append("\nТекст: ").append(truncate(body.strip(), 800));
+        }
+        return text.toString().strip();
     }
 
     /** Full-text search by content; lists ranked matches, each with a one-tap button to open the file. */
@@ -402,9 +675,11 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     }
 
     private String helpMessage() {
-        return "Пришлите документ как файл (вложение) — я распознаю и сохраню его.\n"
+        return "Пришлите документ как файл (вложение) — я распознаю, сохраню и предложу секцию.\n"
                 + "Поиск: просто напишите слова (или /search <запрос>).\n"
                 + "• /get <id> — прислать сохранённый файл документа\n"
+                + "• /sections — показать секции картотеки\n"
+                + "• /section <id> — положить документ в секцию (или сменить)\n"
                 + "• /tokens — сколько токенов израсходовано на распознавание";
     }
 

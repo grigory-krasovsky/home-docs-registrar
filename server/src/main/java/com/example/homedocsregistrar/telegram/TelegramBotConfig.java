@@ -77,6 +77,14 @@ public class TelegramBotConfig {
                                     .description("Прислать файл документа по номеру: /get <id>")
                                     .build(),
                             BotCommand.builder()
+                                    .command("sections")
+                                    .description("Показать секции картотеки")
+                                    .build(),
+                            BotCommand.builder()
+                                    .command("section")
+                                    .description("Положить документ в секцию: /section <id>")
+                                    .build(),
+                            BotCommand.builder()
                                     .command("tokens")
                                     .description("Израсходовано токенов на распознавание")
                                     .build(),
@@ -85,7 +93,7 @@ public class TelegramBotConfig {
                                     .description("Запросить доступ к боту")
                                     .build()))
                     .build());
-            log.info("Telegram command menu set (/search, /get, /tokens, /register)");
+            log.info("Telegram command menu set (/search, /get, /sections, /section, /tokens, /register)");
         } catch (TelegramApiException e) {
             log.warn("Failed to set the Telegram command menu", e);
         }

@@ -45,3 +45,8 @@ search:
   # Expand a search query into related Russian terms via Claude before the FTS lookup, so e.g. «свадьба»
   # also matches «свидетельство о браке». Adds one cheap Haiku call per search; set false for plain FTS.
   expand-query: ${SEARCH_EXPAND_QUERY:true}
+
+sections:
+  # After recognition, suggest which card-catalog subsection a document belongs to with a cheap Haiku
+  # text call (no image). The user confirms or overrides in the chat. Set false to only show the picker.
+  suggest: ${SECTIONS_SUGGEST:true}
