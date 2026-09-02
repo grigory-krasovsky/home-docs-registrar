@@ -7,6 +7,7 @@ import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.send.SendChatAction;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.message.Message;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
@@ -39,6 +40,23 @@ public class TelegramSender {
         } catch (TelegramApiException e) {
             log.error("Failed to send message to chat {}", chatId, e);
             return null;
+        }
+    }
+
+    /**
+     * Replace the text (and inline keyboard) of an existing message in place — used to keep the section
+     * dialog to a single evolving message instead of a trail of new ones. Best-effort; failures are logged.
+     */
+    public void edit(long chatId, int messageId, String text, InlineKeyboardMarkup keyboard) {
+        try {
+            telegramClient.execute(EditMessageText.builder()
+                    .chatId(String.valueOf(chatId))
+                    .messageId(messageId)
+                    .text(text)
+                    .replyMarkup(keyboard)
+                    .build());
+        } catch (TelegramApiException e) {
+            log.warn("Failed to edit message {} in chat {}", messageId, chatId, e);
         }
     }
 
