@@ -4,6 +4,9 @@ import com.example.homedocsregistrar.domain.CatalogSection;
 import com.example.homedocsregistrar.domain.Document;
 import com.example.homedocsregistrar.repository.CatalogSectionRepository;
 import com.example.homedocsregistrar.repository.DocumentRepository;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -98,7 +101,42 @@ public class CatalogSectionService {
         return documents.findById(documentId).map(Document::getSection).map(CatalogSection::path);
     }
 
+    /**
+     * A page of documents (newest first) for the /manage_sections browser: id, a short title, and the
+     * current section path (null if unfiled). Rendered inside a transaction so the lazy section/parent
+     * load safely; callers get plain data.
+     */
+    @Transactional(readOnly = true)
+    public DocPage recentDocuments(int page, int size) {
+        Page<Document> slice = documents.findAll(
+                PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt")));
+        List<DocDigest> items = slice.getContent().stream()
+                .map(doc -> new DocDigest(doc.getId(), shortTitle(doc),
+                        doc.getSection() == null ? null : doc.getSection().path()))
+                .toList();
+        return new DocPage(items, slice.hasNext());
+    }
+
+    /** Best short name for a document: title, else type, else a generic label. */
+    private static String shortTitle(Document doc) {
+        if (doc.getTitle() != null && !doc.getTitle().isBlank()) {
+            return doc.getTitle();
+        }
+        if (doc.getDocType() != null && !doc.getDocType().isBlank()) {
+            return doc.getDocType();
+        }
+        return "документ";
+    }
+
     /** Result of filing a document: which document, and the resolved «Раздел / Подсекция» path. */
     public record Assignment(long documentId, String sectionPath) {
+    }
+
+    /** One row in the document browser: id, short title, and current section path (null = unfiled). */
+    public record DocDigest(long id, String title, String sectionPath) {
+    }
+
+    /** A page of the document browser plus whether a next page exists. */
+    public record DocPage(List<DocDigest> items, boolean hasNext) {
     }
 }

@@ -50,6 +50,9 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIntakeBot.class);
 
+    /** Page size for the /manage_sections document browser. */
+    private static final int DOC_PAGE_SIZE = 8;
+
     private final TelegramSender sender;
     private final TelegramFileService fileService;
     private final DocumentExtractionService extractionService;
@@ -370,6 +373,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.send(chatId, tokensSummary());
         } else if (command.startsWith("/get") || command.startsWith("/doc")) {
             handleGet(chatId, trimmed);
+        } else if (command.startsWith("/manage_sections") || command.startsWith("/manage")) {
+            handleManageSections(chatId);
         } else if (command.startsWith("/sections")) { // must precede /section (a prefix of /sections)
             handleSectionsList(chatId);
         } else if (command.startsWith("/section")) {
@@ -428,14 +433,25 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private void handleSectionCallback(CallbackQuery callback) {
         String[] parts = callback.getData().split(":");
         Long chatId = callback.getMessage() == null ? null : callback.getMessage().getChatId();
-        Long docId = parts.length > 2 ? parseLong(parts[2]) : null;
-        if (chatId == null || docId == null) {
+        if (chatId == null || parts.length < 3) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        if (parts[1].equals("list")) { // sec:list:<page> — the /manage_sections document browser
+            sender.answerCallback(callback.getId(), null);
+            Long page = parseLong(parts[2]);
+            promptDocumentList(chatId, page == null ? 0 : page.intValue());
+            return;
+        }
+        Long docId = parseLong(parts[2]);
+        if (docId == null) {
             sender.answerCallback(callback.getId(), null);
             return;
         }
         Long sectionId = parts.length > 3 ? parseLong(parts[3]) : null;
         switch (parts[1]) {
             case "acc" -> acceptSuggestion(chatId, callback, docId);
+            case "offer" -> offerSectionForExisting(chatId, callback, docId);
             case "pick" -> {
                 sender.answerCallback(callback.getId(), null);
                 promptTopLevel(chatId, docId);
@@ -578,6 +594,43 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         promptTopLevel(chatId, id);
     }
 
+    /** /manage_sections — open the document browser at the first page. */
+    private void handleManageSections(long chatId) {
+        promptDocumentList(chatId, 0);
+    }
+
+    /** One page of documents (newest first) as tap-to-file buttons, plus a «⬇ Ещё» pager. */
+    private void promptDocumentList(long chatId, int page) {
+        CatalogSectionService.DocPage docPage = sectionService.recentDocuments(page, DOC_PAGE_SIZE);
+        if (docPage.items().isEmpty()) {
+            sender.send(chatId, page == 0 ? "Пока нет сохранённых документов." : "Больше документов нет.");
+            return;
+        }
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (CatalogSectionService.DocDigest doc : docPage.items()) {
+            String mark = doc.sectionPath() == null ? "✱ без секции" : "📁 " + doc.sectionPath();
+            String label = "#" + doc.id() + " · " + truncate(doc.title(), 22) + " — " + mark;
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text(truncate(label, 60)).callbackData("sec:offer:" + doc.id()).build()));
+        }
+        if (docPage.hasNext()) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("⬇ Ещё").callbackData("sec:list:" + (page + 1)).build()));
+        }
+        sender.send(chatId, "Документы (стр. " + (page + 1) + ") — выберите, чтобы задать секцию:", keyboard.build());
+    }
+
+    /** From the browser: load an existing document and re-run the initial section offer (suggestion + buttons). */
+    private void offerSectionForExisting(long chatId, CallbackQuery callback, long docId) {
+        Optional<Document> document = retrievalService.byId(docId);
+        if (document.isEmpty()) {
+            sender.answerCallback(callback.getId(), "Документ не найден.");
+            return;
+        }
+        sender.answerCallback(callback.getId(), null);
+        offerSection(chatId, document.get());
+    }
+
     private InlineKeyboardMarkup topLevelKeyboard(long docId) {
         var keyboard = InlineKeyboardMarkup.builder();
         for (CatalogSection top : sectionService.topLevel()) {
@@ -679,6 +732,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 + "Поиск: просто напишите слова (или /search <запрос>).\n"
                 + "• /get <id> — прислать сохранённый файл документа\n"
                 + "• /sections — показать секции картотеки\n"
+                + "• /manage_sections — список документов: разложить по секциям\n"
                 + "• /section <id> — положить документ в секцию (или сменить)\n"
                 + "• /tokens — сколько токенов израсходовано на распознавание";
     }

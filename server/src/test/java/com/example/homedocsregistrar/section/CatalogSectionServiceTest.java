@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,6 +68,37 @@ class CatalogSectionServiceTest {
 
         // Leaf paths are rendered strings (parent loaded in-tx) — what the suggester consumes.
         assertThat(service.leafPaths()).containsExactly("Гриша / Личное", "Гриша / Медицина и здоровье");
+    }
+
+    @Test
+    void recentDocumentsListsNewestFirstWithSectionMarkAndPaging() {
+        CatalogSection obshaya = sections.save(new CatalogSection(null, "Общая"));
+        CatalogSection avto = sections.save(new CatalogSection("Авто", obshaya));
+
+        Document older = new Document();
+        older.setTitle("Старый");
+        older.setContentHash("h-old");
+        older.setCreatedAt(Instant.parse("2026-01-01T00:00:00Z"));
+        documents.save(older);
+
+        Document newer = new Document();
+        newer.setTitle("Новый");
+        newer.setContentHash("h-new");
+        newer.setCreatedAt(Instant.parse("2026-02-01T00:00:00Z"));
+        documents.save(newer);
+        service.assign(newer.getId(), avto.getId());
+
+        CatalogSectionService.DocPage page0 = service.recentDocuments(0, 8);
+        assertThat(page0.items()).extracting(CatalogSectionService.DocDigest::title)
+                .containsExactly("Новый", "Старый"); // newest first
+        assertThat(page0.items().get(0).sectionPath()).isEqualTo("Общая / Авто");
+        assertThat(page0.items().get(1).sectionPath()).isNull(); // unfiled
+        assertThat(page0.hasNext()).isFalse();
+
+        // Paging: one per page -> the first page has a next, the second doesn't.
+        assertThat(service.recentDocuments(0, 1).hasNext()).isTrue();
+        assertThat(service.recentDocuments(1, 1).items()).extracting(CatalogSectionService.DocDigest::title)
+                .containsExactly("Старый");
     }
 
     @Test
