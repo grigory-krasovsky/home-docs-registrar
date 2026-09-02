@@ -451,7 +451,6 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         Long sectionId = parts.length > 3 ? parseLong(parts[3]) : null;
         switch (parts[1]) {
             case "acc" -> acceptSuggestion(chatId, callback, docId);
-            case "offer" -> offerSectionForExisting(chatId, callback, docId);
             case "pick" -> {
                 sender.answerCallback(callback.getId(), null);
                 promptTopLevel(chatId, docId);
@@ -611,24 +610,14 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             String mark = doc.sectionPath() == null ? "✱ без секции" : "📁 " + doc.sectionPath();
             String label = "#" + doc.id() + " · " + truncate(doc.title(), 22) + " — " + mark;
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
-                    .text(truncate(label, 60)).callbackData("sec:offer:" + doc.id()).build()));
+                    // Straight to the manual picker (no Claude call): the AI suggestion is intake-only.
+                    .text(truncate(label, 60)).callbackData("sec:pick:" + doc.id()).build()));
         }
         if (docPage.hasNext()) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
                     .text("⬇ Ещё").callbackData("sec:list:" + (page + 1)).build()));
         }
         sender.send(chatId, "Документы (стр. " + (page + 1) + ") — выберите, чтобы задать секцию:", keyboard.build());
-    }
-
-    /** From the browser: load an existing document and re-run the initial section offer (suggestion + buttons). */
-    private void offerSectionForExisting(long chatId, CallbackQuery callback, long docId) {
-        Optional<Document> document = retrievalService.byId(docId);
-        if (document.isEmpty()) {
-            sender.answerCallback(callback.getId(), "Документ не найден.");
-            return;
-        }
-        sender.answerCallback(callback.getId(), null);
-        offerSection(chatId, document.get());
     }
 
     private InlineKeyboardMarkup topLevelKeyboard(long docId) {
