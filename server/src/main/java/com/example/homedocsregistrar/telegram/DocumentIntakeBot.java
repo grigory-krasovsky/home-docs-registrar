@@ -81,6 +81,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final Map<Long, SectionSuggestionService.Suggestion> pendingSuggestion = new ConcurrentHashMap<>();
     private final Map<Long, PendingSectionInput> pendingSectionInput = new ConcurrentHashMap<>();
     private final Map<Long, PendingFieldInput> pendingFieldInput = new ConcurrentHashMap<>();
+    // Chats where a bare «/ask» is waiting for the next message to be the question (value = prompt msg id).
+    private final Map<Long, Integer> pendingAsk = new ConcurrentHashMap<>();
 
     /** The document fields shown in the card / edit menu, in display order. */
     private static final List<DocumentEditService.Field> EDIT_FIELDS = List.of(
@@ -226,6 +228,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         if (data != null && data.startsWith("fld:")) {
             handleFieldCallback(callback);
+            return;
+        }
+        if (data != null && data.startsWith("ask:")) {
+            handleAskCallback(callback);
             return;
         }
         if (data != null && data.startsWith("del:")) {
@@ -468,6 +474,23 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             }
         }
 
+        // A pending "/ask" (bare) primes the next plain message as the question; a command cancels it.
+        Integer askPromptId = pendingAsk.get(chatId);
+        if (askPromptId != null) {
+            pendingAsk.remove(chatId);
+            if (!command.startsWith("/")) {
+                sender.deleteMessage(chatId, askPromptId); // remove the «напишите вопрос» prompt; keep the question
+                handleAsk(chatId, trimmed);
+                return;
+            }
+            if (command.startsWith("/cancel")) {
+                sender.deleteMessage(chatId, messageId);
+                render(chatId, askPromptId, "Отменено.", null);
+                return;
+            }
+            // any other command cancels the pending question silently and is handled normally below
+        }
+
         if (command.startsWith("/start") || command.startsWith("/help")) {
             sender.send(chatId, helpMessage());
         } else if (command.startsWith("/tokens") || command.startsWith("/usage")) {
@@ -491,8 +514,15 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         } else if (command.startsWith("/search") || command.startsWith("/find")) {
             handleSearch(chatId, argument(trimmed));
         } else if (command.startsWith("/ask") || command.startsWith("/q ") || command.equals("/q")) {
-            // Keep the question in the chat (like plain-text search) so the answer reads as a dialogue.
-            handleAsk(chatId, argument(trimmed));
+            String question = argument(trimmed);
+            if (question.isBlank()) {
+                // Bare «/ask» (e.g. tapped from the menu): prompt, and take the NEXT message as the question.
+                sender.deleteMessage(chatId, messageId); // drop the empty «/ask»; the prompt replaces it
+                startAsk(chatId);
+            } else {
+                // «/ask <вопрос>» in one line: answer at once. Keep the question so the answer reads as a dialogue.
+                handleAsk(chatId, question);
+            }
             return;
         } else if (command.startsWith("/")) {
             sender.send(chatId, helpMessage());
@@ -1315,6 +1345,42 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     }
 
     /**
+     * Bare «/ask» (e.g. tapped from the command menu): prompt for a question and take the NEXT plain
+     * message as it (a one-shot wait, not a persistent mode — after the answer, plain text is search again).
+     */
+    private void startAsk(long chatId) {
+        if (!qaService.isEnabled()) {
+            sender.send(chatId, "Ответы на вопросы сейчас недоступны. Поищите по словам — просто напишите запрос.");
+            return;
+        }
+        pendingSectionInput.remove(chatId);
+        pendingFieldInput.remove(chatId);
+        Integer promptId = sender.send(chatId,
+                "🧠 Напишите вопрос по вашим документам следующим сообщением "
+                        + "(например: «до какого числа гарантия на холодильник»).",
+                InlineKeyboardMarkup.builder()
+                        .keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                                .text("✖ Отмена").callbackData("ask:cancel").build()))
+                        .build());
+        if (promptId != null) {
+            pendingAsk.put(chatId, promptId);
+        }
+    }
+
+    /** The only ask:* callback is «✖ Отмена» on the «напишите вопрос» prompt. */
+    private void handleAskCallback(CallbackQuery callback) {
+        var message = callback.getMessage();
+        Long chatId = message == null ? null : message.getChatId();
+        Integer messageId = message == null ? null : message.getMessageId();
+        sender.answerCallback(callback.getId(), null);
+        if (chatId == null) {
+            return;
+        }
+        pendingAsk.remove(chatId);
+        render(chatId, messageId, "Отменено.", null);
+    }
+
+    /**
      * Answer a natural-language question over the archive (RAG): {@link DocumentQaService} retrieves the
      * relevant documents, grounds Claude on their text, and returns an answer plus the cited sources. The
      * sources are shown as «открыть файл» buttons, like search hits.
@@ -1382,7 +1448,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private String helpMessage() {
         return "Пришлите документ как файл (вложение) — я распознаю, сохраню и предложу секцию.\n"
                 + "Поиск: просто напишите слова.\n"
-                + "• /ask <вопрос> — ответ по вашим документам (напр. «до какого числа гарантия на холодильник»)\n"
+                + "• /ask — задать вопрос по вашим документам (следующим сообщением; или сразу «/ask <вопрос>»)\n"
                 + "• /browse — открыть секцию и посмотреть документы в ней\n"
                 + "• /manage_sections — разложить документы по секциям\n"
                 + "• ✏️ Изменить в карточке документа — поправить поля (тип, дата, сумма, гарантия…); /rename <id> — название\n"
