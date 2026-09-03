@@ -782,8 +782,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         var keyboard = InlineKeyboardMarkup.builder();
         for (CatalogSection top : tops) {
+            String emoji = ownerEmoji(top.getLabel());
+            String icon = emoji.isEmpty() ? "📂" : emoji; // person emoji for a known owner, else a folder
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
-                    .text("📂 " + top.getLabel()).callbackData("brw:top:" + top.getId()).build()));
+                    .text(icon + " " + top.getLabel()).callbackData("brw:top:" + top.getId()).build()));
         }
         if (unfiled > 0) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
