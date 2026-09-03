@@ -1191,7 +1191,6 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             line.append(" · ").append(document.getTitle());
         }
         String meta = joinNonBlank(
-                document.getCounterparty(),
                 document.getDocDate() == null ? null : document.getDocDate().toString(),
                 document.getAmount() == null ? null : document.getAmount().toPlainString());
         if (!meta.isBlank()) {
@@ -1331,7 +1330,6 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         append(text, "Тип", document.getDocType());
         append(text, "Название", document.getTitle());
-        append(text, "Контрагент", document.getCounterparty());
         LocalDate docDate = document.getDocDate();
         append(text, "Дата", docDate == null ? null : docDate.toString());
         append(text, "№", document.getDocumentNumber());
