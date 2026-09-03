@@ -46,6 +46,12 @@ search:
   # also matches «свидетельство о браке». Adds one cheap Haiku call per search; set false for plain FTS.
   expand-query: ${SEARCH_EXPAND_QUERY:true}
 
+qa:
+  # Answer free-text questions over the archive (/ask): retrieve the relevant documents via search, then
+  # ground a Haiku call on their text to answer with citations. Adds one Haiku call per question (on top
+  # of retrieval); set false to disable /ask (the bot then says Q&A is unavailable).
+  enabled: ${QA_ENABLED:true}
+
 sections:
   # After recognition, suggest which card-catalog subsection a document belongs to with a cheap Haiku
   # text call (no image). The user confirms or overrides in the chat. Set false to only show the picker.

@@ -66,11 +66,17 @@ public class TelegramBotConfig {
     /** Publish the bot's command menu (the "/" button in Telegram); best-effort, never fatal. */
     private void registerCommandMenu(TelegramClient telegramClient) {
         try {
-            // Only argument-free, tap-useful commands go in the "/" menu. /search (plain text already
-            // searches), /get, /section, /rename need an id/query, and /sections is superseded by /browse
-            // — they still work when typed, they're just not menu buttons.
+            // Only argument-free, tap-useful commands go in the "/" menu — plus /ask, which has no
+            // plain-text equivalent (unlike /search, where plain text already searches), so surfacing it
+            // aids discovery: tapping it inserts "/ask " and the user types the question. /get, /section,
+            // /rename need an id/query, and /sections is superseded by /browse — they still work when
+            // typed, they're just not menu buttons.
             telegramClient.execute(SetMyCommands.builder()
                     .commands(List.of(
+                            BotCommand.builder()
+                                    .command("ask")
+                                    .description("Задать вопрос по вашим документам")
+                                    .build(),
                             BotCommand.builder()
                                     .command("browse")
                                     .description("Открыть секцию и посмотреть документы в ней")
@@ -88,7 +94,7 @@ public class TelegramBotConfig {
                                     .description("Запросить доступ к боту")
                                     .build()))
                     .build());
-            log.info("Telegram command menu set (/browse, /manage_sections, /tokens, /register)");
+            log.info("Telegram command menu set (/ask, /browse, /manage_sections, /tokens, /register)");
         } catch (TelegramApiException e) {
             log.warn("Failed to set the Telegram command menu", e);
         }

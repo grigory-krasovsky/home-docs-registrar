@@ -16,6 +16,7 @@ import com.example.homedocsregistrar.extraction.UsageEstimator;
 import com.example.homedocsregistrar.intake.DocumentIntakeService;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IncomingPage;
 import com.example.homedocsregistrar.intake.DocumentIntakeService.IntakeResult;
+import com.example.homedocsregistrar.qa.DocumentQaService;
 import com.example.homedocsregistrar.retrieval.DocumentRetrievalService;
 import com.example.homedocsregistrar.search.DocumentSearchService;
 import com.example.homedocsregistrar.section.CatalogSectionService;
@@ -63,6 +64,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final DocumentIntakeService intakeService;
     private final DocumentRetrievalService retrievalService;
     private final DocumentSearchService searchService;
+    private final DocumentQaService qaService;
     private final ApiUsageTracker usageTracker;
     private final UsageEstimator usageEstimator;
     private final AccessService accessService;
@@ -83,6 +85,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
                              DocumentRetrievalService retrievalService, DocumentSearchService searchService,
+                             DocumentQaService qaService,
                              ApiUsageTracker usageTracker, UsageEstimator usageEstimator,
                              AccessService accessService, RegistrationThrottle registrationThrottle,
                              MediaGroupCollector mediaGroupCollector,
@@ -95,6 +98,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.intakeService = intakeService;
         this.retrievalService = retrievalService;
         this.searchService = searchService;
+        this.qaService = qaService;
         this.usageTracker = usageTracker;
         this.usageEstimator = usageEstimator;
         this.accessService = accessService;
@@ -480,6 +484,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.send(chatId, "Отменено.");
         } else if (command.startsWith("/search") || command.startsWith("/find")) {
             handleSearch(chatId, argument(trimmed));
+        } else if (command.startsWith("/ask") || command.startsWith("/q ") || command.equals("/q")) {
+            // Keep the question in the chat (like plain-text search) so the answer reads as a dialogue.
+            handleAsk(chatId, argument(trimmed));
+            return;
         } else if (command.startsWith("/")) {
             sender.send(chatId, helpMessage());
         } else {
@@ -1181,6 +1189,40 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         sender.send(chatId, text.toString(), keyboard.build());
     }
 
+    /**
+     * Answer a natural-language question over the archive (RAG): {@link DocumentQaService} retrieves the
+     * relevant documents, grounds Claude on their text, and returns an answer plus the cited sources. The
+     * sources are shown as «открыть файл» buttons, like search hits.
+     */
+    private void handleAsk(long chatId, String question) {
+        if (question == null || question.isBlank()) {
+            sender.send(chatId, "Задайте вопрос по документам, например: "
+                    + "/ask до какого числа гарантия на холодильник");
+            return;
+        }
+        if (!qaService.isEnabled()) {
+            sender.send(chatId, "Ответы на вопросы сейчас недоступны. Поищите по словам — просто напишите запрос.");
+            return;
+        }
+        sender.sendChatAction(chatId, "typing"); // «печатает…» while retrieval + the answer call run
+        DocumentQaService.QaResult result = qaService.ask(question);
+        StringBuilder text = new StringBuilder(result.answer());
+        if (!result.found() && !result.relatedTerms().isEmpty()) {
+            text.append("\n\nИскал также: ").append(String.join(", ", result.relatedTerms()));
+        }
+        if (result.sources().isEmpty()) {
+            sender.send(chatId, text.toString());
+            return;
+        }
+        text.append("\n\nИсточники:");
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (Document source : result.sources()) {
+            text.append("\n\n").append(resultLine(source));
+            keyboard.keyboardRow(new InlineKeyboardRow(openFileButton(source.getId(), buttonLabel(source))));
+        }
+        sender.send(chatId, text.toString(), keyboard.build());
+    }
+
     /** One search hit: id + the fields we have (the file is opened via the row's button). */
     private String resultLine(Document document) {
         StringBuilder line = new StringBuilder("#").append(document.getId());
@@ -1215,6 +1257,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private String helpMessage() {
         return "Пришлите документ как файл (вложение) — я распознаю, сохраню и предложу секцию.\n"
                 + "Поиск: просто напишите слова.\n"
+                + "• /ask <вопрос> — ответ по вашим документам (напр. «до какого числа гарантия на холодильник»)\n"
                 + "• /browse — открыть секцию и посмотреть документы в ней\n"
                 + "• /manage_sections — разложить документы по секциям\n"
                 + "• /rename <id> — изменить название документа (или кнопкой ✏️)\n"
