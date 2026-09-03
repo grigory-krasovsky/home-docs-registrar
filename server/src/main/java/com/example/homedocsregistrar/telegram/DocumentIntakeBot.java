@@ -80,7 +80,13 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     // via the buttons, and a pending name/title can be re-entered via /section or /rename.
     private final Map<Long, SectionSuggestionService.Suggestion> pendingSuggestion = new ConcurrentHashMap<>();
     private final Map<Long, PendingSectionInput> pendingSectionInput = new ConcurrentHashMap<>();
-    private final Map<Long, PendingTitleInput> pendingTitleInput = new ConcurrentHashMap<>();
+    private final Map<Long, PendingFieldInput> pendingFieldInput = new ConcurrentHashMap<>();
+
+    /** The document fields shown in the card / edit menu, in display order. */
+    private static final List<DocumentEditService.Field> EDIT_FIELDS = List.of(
+            DocumentEditService.Field.DOC_TYPE, DocumentEditService.Field.TITLE,
+            DocumentEditService.Field.DATE, DocumentEditService.Field.NUMBER,
+            DocumentEditService.Field.AMOUNT, DocumentEditService.Field.WARRANTY);
 
     public DocumentIntakeBot(TelegramSender sender, TelegramFileService fileService,
                              DocumentExtractionService extractionService, DocumentIntakeService intakeService,
@@ -118,8 +124,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private record PendingSectionInput(long docId, Long parentId, Integer promptMessageId) {
     }
 
-    /** A pending typed-in new title: which document to rename, and the prompt message to edit in place. */
-    private record PendingTitleInput(long docId, Integer promptMessageId) {
+    /** A pending typed-in field value: which document + field to set, and the prompt message to edit in place. */
+    private record PendingFieldInput(long docId, DocumentEditService.Field field, Integer promptMessageId) {
     }
 
     @Override
@@ -218,8 +224,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             handleBrowseCallback(callback);
             return;
         }
-        if (data != null && data.startsWith("title:")) {
-            handleTitleCallback(callback);
+        if (data != null && data.startsWith("fld:")) {
+            handleFieldCallback(callback);
             return;
         }
         if (data != null && data.startsWith("del:")) {
@@ -419,7 +425,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         String buttonLabel = pageCount > 1 ? "📎 Открыть (" + pageCount + " стр.)" : "📎 Открыть файл";
         var savedKeyboard = InlineKeyboardMarkup.builder()
                 .keyboardRow(new InlineKeyboardRow(
-                        openFileButton(document.getId(), buttonLabel), renameButton(document.getId())))
+                        openFileButton(document.getId(), buttonLabel), editFieldsButton(document.getId())))
                 .build();
         sender.send(chatId, text, savedKeyboard);
         offerSection(chatId, document);
@@ -446,18 +452,18 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             // any other command cancels the pending input silently and is handled normally below
         }
 
-        // A pending "type a new title" input consumes the next plain message; a command cancels it.
-        PendingTitleInput titleEdit = pendingTitleInput.get(chatId);
-        if (titleEdit != null) {
-            pendingTitleInput.remove(chatId);
+        // A pending "type a new field value" input consumes the next plain message; a command cancels it.
+        PendingFieldInput fieldEdit = pendingFieldInput.get(chatId);
+        if (fieldEdit != null) {
+            pendingFieldInput.remove(chatId);
             if (!command.startsWith("/")) {
-                sender.deleteMessage(chatId, messageId); // the typed title disappears; the prompt updates
-                applyTitle(chatId, titleEdit, trimmed);
+                sender.deleteMessage(chatId, messageId); // the typed value disappears; the prompt updates
+                applyField(chatId, fieldEdit, trimmed);
                 return;
             }
             if (command.startsWith("/cancel")) {
                 sender.deleteMessage(chatId, messageId);
-                render(chatId, titleEdit.promptMessageId(), "Отменено.", null);
+                render(chatId, fieldEdit.promptMessageId(), "Отменено.", null);
                 return;
             }
         }
@@ -818,19 +824,29 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             render(chatId, editMessageId, "Документ #" + docId + " не найден.", null);
             return;
         }
-        String title = document.get().getTitle();
-        String shown = title == null || title.isBlank() ? "без названия" : title;
         // subId == 0 marks the «✱ Без секции» origin; otherwise return to that subsection's page.
         String back = subId != null && subId > 0
                 ? "brw:sub:" + topId + ":" + subId + ":" + page
                 : "brw:none:" + page;
         var keyboard = InlineKeyboardMarkup.builder()
                 .keyboardRow(new InlineKeyboardRow(openFileButton(docId, "📎 Скачать файл")))
-                .keyboardRow(new InlineKeyboardRow(renameButton(docId)))
+                .keyboardRow(new InlineKeyboardRow(editFieldsButton(docId)))
                 .keyboardRow(new InlineKeyboardRow(deleteButton(docId)))
                 .keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
                         .text("⬅ Назад").callbackData(back).build()));
-        render(chatId, editMessageId, "📄 Документ #" + docId + "\nНазвание: " + shown, keyboard.build());
+        render(chatId, editMessageId, documentCard(document.get()), keyboard.build());
+    }
+
+    /** The document «card» text: id + every field the model filled (empty fields omitted). */
+    private String documentCard(Document document) {
+        StringBuilder card = new StringBuilder("📄 Документ #").append(document.getId());
+        for (DocumentEditService.Field field : EDIT_FIELDS) {
+            String value = editService.currentValue(document, field);
+            if (!value.isBlank()) {
+                card.append('\n').append(field.label()).append(": ").append(value);
+            }
+        }
+        return card.toString();
     }
 
     /** Route a brw:* callback: home | top | sub | doc:&lt;topId&gt;:&lt;subId&gt;:&lt;page&gt;:&lt;docId&gt; | none | close. */
@@ -871,33 +887,39 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         return value == null ? 0 : value.intValue();
     }
 
-    // ----- edit a document's title (✏️ button after save / in /browse, or /rename <id>) -----
+    // ----- edit a document's fields (✏️ Изменить after save / in /browse, or /rename <id>) -----
 
-    /** A tapped ✏️: begin a title edit (title:&lt;docId&gt;) or cancel it (title:cancel:&lt;docId&gt;). */
-    private void handleTitleCallback(CallbackQuery callback) {
+    /**
+     * Route a fld:* callback: {@code fld:menu:<docId>} (open the edit menu) | {@code fld:add:<docId>}
+     * (pick an empty field to fill) | {@code fld:back:<docId>} (back to the menu) | {@code fld:set:
+     * <field>:<docId>} (start editing a field) | {@code fld:clear:<field>:<docId>} (clear it) |
+     * {@code fld:cancel:<docId>} (close).
+     */
+    private void handleFieldCallback(CallbackQuery callback) {
         String[] parts = callback.getData().split(":");
         var message = callback.getMessage();
         Long chatId = message == null ? null : message.getChatId();
         Integer messageId = message == null ? null : message.getMessageId();
-        if (chatId == null) {
+        if (chatId == null || parts.length < 3) {
             sender.answerCallback(callback.getId(), null);
             return;
         }
-        if (parts.length > 2 && parts[1].equals("cancel")) { // title:cancel:<docId>
-            pendingTitleInput.remove(chatId);
-            sender.answerCallback(callback.getId(), "Отменено");
-            render(chatId, messageId, "Отменено.", null);
-            return;
+        sender.answerCallback(callback.getId(), null);
+        switch (parts[1]) {
+            case "menu" -> optId(parts[2]).ifPresent(id -> openEditMenu(chatId, id));
+            case "add" -> optId(parts[2]).ifPresent(id -> renderAddMenu(chatId, messageId, id));
+            case "back" -> optId(parts[2]).ifPresent(id -> renderEditMenu(chatId, messageId, id));
+            case "cancel" -> {
+                pendingFieldInput.remove(chatId);
+                render(chatId, messageId, "Отменено.", null);
+            }
+            case "set" -> withFieldAndId(parts, (field, id) -> startFieldEdit(chatId, messageId, field, id));
+            case "clear" -> withFieldAndId(parts, (field, id) -> clearFieldInPlace(chatId, messageId, field, id));
+            default -> { }
         }
-        Long docId = parts.length > 1 ? parseLong(parts[1]) : null;
-        if (docId == null) {
-            sender.answerCallback(callback.getId(), null);
-            return;
-        }
-        startTitleEdit(chatId, callback, docId);
     }
 
-    /** /rename &lt;id&gt; (alias /title): begin a title edit for a document by id. */
+    /** /rename &lt;id&gt; (alias /title): begin editing a document's title by id. */
     private void handleRenameCommand(long chatId, String text) {
         Long id = parseDocId(text);
         if (id == null) {
@@ -908,61 +930,164 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.send(chatId, "Документ id=" + id + " не найден.");
             return;
         }
-        startTitleEdit(chatId, null, id);
+        startFieldEdit(chatId, null, DocumentEditService.Field.TITLE, id);
+    }
+
+    /** Open the field-edit menu as a FRESH message (so the card / save summary stays above it). */
+    private void openEditMenu(long chatId, long docId) {
+        Optional<Document> document = retrievalService.byId(docId);
+        if (document.isEmpty()) {
+            sender.send(chatId, "Документ #" + docId + " не найден.");
+            return;
+        }
+        pendingFieldInput.remove(chatId);
+        sender.send(chatId, "✏️ Что изменить в документе #" + docId + "?", editMenuKeyboard(document.get()));
+    }
+
+    /** Re-render the edit menu in place (after «⬅ Назад» from the add-field picker). */
+    private void renderEditMenu(long chatId, Integer messageId, long docId) {
+        retrievalService.byId(docId).ifPresentOrElse(
+                document -> render(chatId, messageId, "✏️ Что изменить в документе #" + docId + "?",
+                        editMenuKeyboard(document)),
+                () -> render(chatId, messageId, "Документ #" + docId + " не найден.", null));
+    }
+
+    /** Render the picker of fields the model left empty, so the user can fill one in. */
+    private void renderAddMenu(long chatId, Integer messageId, long docId) {
+        retrievalService.byId(docId).ifPresentOrElse(
+                document -> render(chatId, messageId, "Добавить поле в документ #" + docId + ":",
+                        addFieldKeyboard(document)),
+                () -> render(chatId, messageId, "Документ #" + docId + " не найден.", null));
     }
 
     /**
-     * Prompt for a new title as a FRESH message (so the save summary / browse list stays), and remember
-     * its id so the typed title edits that message in place. Clears any pending section-name input.
+     * Prompt for a field's new value. From a button (callback), the menu message morphs into the prompt in
+     * place; from {@code /rename} (messageId null) a fresh prompt is sent. The typed value then edits the
+     * prompt message. Clears any pending section-name input.
      */
-    private void startTitleEdit(long chatId, CallbackQuery callback, long docId) {
+    private void startFieldEdit(long chatId, Integer messageId, DocumentEditService.Field field, long docId) {
         Optional<Document> document = retrievalService.byId(docId);
         if (document.isEmpty()) {
-            if (callback != null) {
-                sender.answerCallback(callback.getId(), "Документ не найден.");
+            if (messageId != null) {
+                render(chatId, messageId, "Документ #" + docId + " не найден.", null);
             } else {
                 sender.send(chatId, "Документ #" + docId + " не найден.");
             }
             return;
         }
-        if (callback != null) {
-            sender.answerCallback(callback.getId(), null);
-        }
         pendingSectionInput.remove(chatId);
-        Integer promptId = sender.send(chatId, titlePrompt(document.get()), cancelTitleKeyboard(docId));
-        pendingTitleInput.put(chatId, new PendingTitleInput(docId, promptId));
-    }
-
-    /** Apply a typed-in title and confirm in place (editing the prompt message). */
-    private void applyTitle(long chatId, PendingTitleInput pending, String title) {
-        Integer editMessageId = pending.promptMessageId();
-        if (title.isBlank()) {
-            render(chatId, editMessageId, "Пустое название — отменил.", null);
-            return;
+        String prompt = fieldPrompt(document.get(), field);
+        InlineKeyboardMarkup keyboard = fieldEditKeyboard(field, docId);
+        Integer promptId;
+        if (messageId != null) { // morph the menu message into the prompt (its id is unchanged)
+            render(chatId, messageId, prompt, keyboard);
+            promptId = messageId;
+        } else { // /rename: a fresh prompt so the card / list above stays
+            promptId = sender.send(chatId, prompt, keyboard);
         }
-        Optional<Document> updated = editService.renameTitle(pending.docId(), title);
-        if (updated.isEmpty()) {
-            render(chatId, editMessageId, "Документ #" + pending.docId() + " не найден.", null);
-            return;
+        pendingFieldInput.put(chatId, new PendingFieldInput(docId, field, promptId));
+    }
+
+    /** Apply a typed-in field value and confirm in place; an invalid value keeps the prompt for a retry. */
+    private void applyField(long chatId, PendingFieldInput pending, String rawValue) {
+        Integer messageId = pending.promptMessageId();
+        DocumentEditService.Field field = pending.field();
+        DocumentEditService.UpdateResult result = editService.updateField(pending.docId(), field, rawValue);
+        switch (result.status()) {
+            case OK -> render(chatId, messageId, "✏️ " + field.label() + " документа #" + pending.docId()
+                    + " → " + (result.newValue().isBlank() ? "—" : result.newValue()), null);
+            case NOT_FOUND -> render(chatId, messageId, "Документ #" + pending.docId() + " не найден.", null);
+            case INVALID -> {
+                render(chatId, messageId, result.error() + "\nВведите значение ещё раз (или /cancel):",
+                        fieldEditKeyboard(field, pending.docId()));
+                pendingFieldInput.put(chatId, pending); // re-arm so the next message retries
+            }
         }
-        render(chatId, editMessageId, "✏️ Название документа #" + pending.docId() + " → " + updated.get().getTitle(), null);
     }
 
-    private String titlePrompt(Document document) {
-        String current = document.getTitle();
-        String now = current == null || current.isBlank() ? "—" : current;
-        return "Название документа #" + document.getId() + ": " + now + "\nВведите новое название (или /cancel):";
+    /** Clear a field (set it to empty) and confirm in place. */
+    private void clearFieldInPlace(long chatId, Integer messageId, DocumentEditService.Field field, long docId) {
+        pendingFieldInput.remove(chatId);
+        DocumentEditService.UpdateResult result = editService.clearField(docId, field);
+        render(chatId, messageId, result.isOk()
+                ? "✏️ " + field.label() + " документа #" + docId + " очищено."
+                : "Документ #" + docId + " не найден.", null);
     }
 
-    private InlineKeyboardMarkup cancelTitleKeyboard(long docId) {
+    private String fieldPrompt(Document document, DocumentEditService.Field field) {
+        String current = editService.currentValue(document, field);
+        String now = current.isBlank() ? "—" : current;
+        return field.label() + " документа #" + document.getId() + ": " + now
+                + "\nВведите новое значение" + field.hint() + " (или /cancel):";
+    }
+
+    /** The edit menu: one button per FILLED field (showing its value) + «➕ Добавить поле» when some are empty. */
+    private InlineKeyboardMarkup editMenuKeyboard(Document document) {
+        long docId = document.getId();
+        var keyboard = InlineKeyboardMarkup.builder();
+        boolean anyEmpty = false;
+        for (DocumentEditService.Field field : EDIT_FIELDS) {
+            String value = editService.currentValue(document, field);
+            if (value.isBlank()) {
+                anyEmpty = true;
+                continue;
+            }
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("✏️ " + field.label() + ": " + truncate(value, 24))
+                    .callbackData("fld:set:" + field.key() + ":" + docId).build()));
+        }
+        if (anyEmpty) {
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("➕ Добавить поле").callbackData("fld:add:" + docId).build()));
+        }
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("✖ Закрыть").callbackData("fld:cancel:" + docId).build()));
+        return keyboard.build();
+    }
+
+    /** The add-field picker: one button per EMPTY field + «⬅ Назад» to the edit menu. */
+    private InlineKeyboardMarkup addFieldKeyboard(Document document) {
+        long docId = document.getId();
+        var keyboard = InlineKeyboardMarkup.builder();
+        for (DocumentEditService.Field field : EDIT_FIELDS) {
+            if (editService.currentValue(document, field).isBlank()) {
+                keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                        .text("➕ " + field.label()).callbackData("fld:set:" + field.key() + ":" + docId).build()));
+            }
+        }
+        keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                .text("⬅ Назад").callbackData("fld:back:" + docId).build()));
+        return keyboard.build();
+    }
+
+    private InlineKeyboardMarkup fieldEditKeyboard(DocumentEditService.Field field, long docId) {
         return InlineKeyboardMarkup.builder()
-                .keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
-                        .text("✖ Отмена").callbackData("title:cancel:" + docId).build()))
+                .keyboardRow(new InlineKeyboardRow(
+                        InlineKeyboardButton.builder().text("🗑 Очистить")
+                                .callbackData("fld:clear:" + field.key() + ":" + docId).build(),
+                        InlineKeyboardButton.builder().text("✖ Отмена")
+                                .callbackData("fld:cancel:" + docId).build()))
                 .build();
     }
 
-    private InlineKeyboardButton renameButton(long docId) {
-        return InlineKeyboardButton.builder().text("✏️ Название").callbackData("title:" + docId).build();
+    private InlineKeyboardButton editFieldsButton(long docId) {
+        return InlineKeyboardButton.builder().text("✏️ Изменить").callbackData("fld:menu:" + docId).build();
+    }
+
+    /** Resolve a {@code fld:set|clear:<field>:<docId>} callback and run the action when both parse. */
+    private void withFieldAndId(String[] parts, java.util.function.BiConsumer<DocumentEditService.Field, Long> action) {
+        if (parts.length < 4) {
+            return;
+        }
+        DocumentEditService.Field field = DocumentEditService.Field.fromKey(parts[2]).orElse(null);
+        Long docId = parseLong(parts[3]);
+        if (field != null && docId != null) {
+            action.accept(field, docId);
+        }
+    }
+
+    private static Optional<Long> optId(String value) {
+        return Optional.ofNullable(parseLong(value));
     }
 
     // ----- delete a document (🗑 in the card / /delete <id>); irreversible, so confirm first -----
@@ -1260,7 +1385,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 + "• /ask <вопрос> — ответ по вашим документам (напр. «до какого числа гарантия на холодильник»)\n"
                 + "• /browse — открыть секцию и посмотреть документы в ней\n"
                 + "• /manage_sections — разложить документы по секциям\n"
-                + "• /rename <id> — изменить название документа (или кнопкой ✏️)\n"
+                + "• ✏️ Изменить в карточке документа — поправить поля (тип, дата, сумма, гарантия…); /rename <id> — название\n"
                 + "• /delete <id> — удалить документ (или 🗑 в карточке)\n"
                 + "• /tokens — сколько токенов израсходовано на распознавание";
     }
