@@ -751,12 +751,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         CatalogSectionService.DocPage docPage = sectionService.documentsInSection(subId, page, DOC_PAGE_SIZE);
         var keyboard = InlineKeyboardMarkup.builder();
         for (CatalogSectionService.DocDigest doc : docPage.items()) {
-            // Telegram can't do 90/10 button widths, and a 2-button row halves the name — so put the
-            // full-width name on its own row (opens the file) and the ✏️ rename on its own row below it.
-            keyboard.keyboardRow(new InlineKeyboardRow(
-                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 40))));
+            // One full-width row per doc → its card (download + rename), so the name shows in full.
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
-                    .text("✏️ Переименовать #" + doc.id()).callbackData("title:" + doc.id()).build()));
+                    .text("📄 #" + doc.id() + " · " + truncate(doc.title(), 40))
+                    .callbackData("brw:doc:" + topId + ":" + subId + ":" + page + ":" + doc.id()).build()));
         }
         if (docPage.hasNext()) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
@@ -766,7 +764,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 .text("⬅ Назад").callbackData("brw:top:" + topId).build()));
         String text = docPage.items().isEmpty()
                 ? "📄 " + path + " — пусто."
-                : "📄 " + path + " — документы (нажмите, чтобы открыть):";
+                : "📄 " + path + " — выберите документ:";
         render(chatId, editMessageId, text, keyboard.build());
     }
 
@@ -775,12 +773,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         CatalogSectionService.DocPage docPage = sectionService.unfiledDocuments(page, DOC_PAGE_SIZE);
         var keyboard = InlineKeyboardMarkup.builder();
         for (CatalogSectionService.DocDigest doc : docPage.items()) {
-            // Telegram can't do 90/10 button widths, and a 2-button row halves the name — so put the
-            // full-width name on its own row (opens the file) and the ✏️ rename on its own row below it.
-            keyboard.keyboardRow(new InlineKeyboardRow(
-                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 40))));
+            // One full-width row per doc → its card; topId/subId = 0 marks the «без секции» origin.
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
-                    .text("✏️ Переименовать #" + doc.id()).callbackData("title:" + doc.id()).build()));
+                    .text("📄 #" + doc.id() + " · " + truncate(doc.title(), 40))
+                    .callbackData("brw:doc:0:0:" + page + ":" + doc.id()).build()));
         }
         if (docPage.hasNext()) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
@@ -788,11 +784,36 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
                 .text("⬅ Назад").callbackData("brw:home").build()));
-        String text = docPage.items().isEmpty() ? "Без секции — пусто." : "✱ Без секции (нажмите, чтобы открыть):";
+        String text = docPage.items().isEmpty() ? "Без секции — пусто." : "✱ Без секции — выберите документ:";
         render(chatId, editMessageId, text, keyboard.build());
     }
 
-    /** Route a brw:* callback: home | top:&lt;id&gt; | sub:&lt;topId&gt;:&lt;subId&gt;:&lt;page&gt; | none:&lt;page&gt; | close. */
+    /** The document «card»: download the file or rename it; «Назад» returns to the list it came from. */
+    private void browseDocDetail(long chatId, Integer editMessageId, Long topId, Long subId, int page, Long docId) {
+        if (docId == null) {
+            render(chatId, editMessageId, "Документ не найден.", null);
+            return;
+        }
+        Optional<Document> document = retrievalService.byId(docId);
+        if (document.isEmpty()) {
+            render(chatId, editMessageId, "Документ #" + docId + " не найден.", null);
+            return;
+        }
+        String title = document.get().getTitle();
+        String shown = title == null || title.isBlank() ? "без названия" : title;
+        // subId == 0 marks the «✱ Без секции» origin; otherwise return to that subsection's page.
+        String back = subId != null && subId > 0
+                ? "brw:sub:" + topId + ":" + subId + ":" + page
+                : "brw:none:" + page;
+        var keyboard = InlineKeyboardMarkup.builder()
+                .keyboardRow(new InlineKeyboardRow(openFileButton(docId, "📎 Скачать файл")))
+                .keyboardRow(new InlineKeyboardRow(renameButton(docId)))
+                .keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                        .text("⬅ Назад").callbackData(back).build()));
+        render(chatId, editMessageId, "📄 Документ #" + docId + "\nНазвание: " + shown, keyboard.build());
+    }
+
+    /** Route a brw:* callback: home | top | sub | doc:&lt;topId&gt;:&lt;subId&gt;:&lt;page&gt;:&lt;docId&gt; | none | close. */
     private void handleBrowseCallback(CallbackQuery callback) {
         String[] parts = callback.getData().split(":");
         var message = callback.getMessage();
@@ -810,6 +831,11 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                     parts.length > 2 ? parseLong(parts[2]) : null,
                     parts.length > 3 ? parseLong(parts[3]) : null,
                     parsePage(parts, 4));
+            case "doc" -> browseDocDetail(chatId, messageId,
+                    parts.length > 2 ? parseLong(parts[2]) : null,
+                    parts.length > 3 ? parseLong(parts[3]) : null,
+                    parsePage(parts, 4),
+                    parts.length > 5 ? parseLong(parts[5]) : null);
             case "none" -> browseUnfiled(chatId, messageId, parsePage(parts, 2));
             case "close" -> render(chatId, messageId, "Закрыто.", null);
             default -> { }
