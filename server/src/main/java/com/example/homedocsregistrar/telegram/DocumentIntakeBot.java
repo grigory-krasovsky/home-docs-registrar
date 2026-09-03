@@ -751,9 +751,12 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         CatalogSectionService.DocPage docPage = sectionService.documentsInSection(subId, page, DOC_PAGE_SIZE);
         var keyboard = InlineKeyboardMarkup.builder();
         for (CatalogSectionService.DocDigest doc : docPage.items()) {
+            // Telegram can't do 90/10 button widths, and a 2-button row halves the name — so put the
+            // full-width name on its own row (opens the file) and the ✏️ rename on its own row below it.
             keyboard.keyboardRow(new InlineKeyboardRow(
-                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 26)),
-                    InlineKeyboardButton.builder().text("✏️").callbackData("title:" + doc.id()).build()));
+                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 40))));
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("✏️ Переименовать #" + doc.id()).callbackData("title:" + doc.id()).build()));
         }
         if (docPage.hasNext()) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
@@ -772,9 +775,12 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         CatalogSectionService.DocPage docPage = sectionService.unfiledDocuments(page, DOC_PAGE_SIZE);
         var keyboard = InlineKeyboardMarkup.builder();
         for (CatalogSectionService.DocDigest doc : docPage.items()) {
+            // Telegram can't do 90/10 button widths, and a 2-button row halves the name — so put the
+            // full-width name on its own row (opens the file) and the ✏️ rename on its own row below it.
             keyboard.keyboardRow(new InlineKeyboardRow(
-                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 26)),
-                    InlineKeyboardButton.builder().text("✏️").callbackData("title:" + doc.id()).build()));
+                    openFileButton(doc.id(), "📎 #" + doc.id() + " · " + truncate(doc.title(), 40))));
+            keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                    .text("✏️ Переименовать #" + doc.id()).callbackData("title:" + doc.id()).build()));
         }
         if (docPage.hasNext()) {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
