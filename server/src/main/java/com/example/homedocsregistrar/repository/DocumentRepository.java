@@ -9,10 +9,23 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
 public interface DocumentRepository extends JpaRepository<Document, Long> {
+
+    /**
+     * The owner (top-level section label) of each given document — for the per-person emoji on result
+     * buttons. Returns {@code [documentId, ownerLabel]} rows; documents with no section aren't returned
+     * (they get no owner). One query, no lazy loads.
+     */
+    @Query("""
+            select d.id, coalesce(p.label, s.label)
+            from Document d join d.section s left join s.parent p
+            where d.id in :ids
+            """)
+    List<Object[]> findOwnerLabels(@Param("ids") Collection<Long> ids);
 
     /** Documents the home PC has not backed up yet — the agent's work list. */
     List<Document> findByBackupStatus(BackupStatus backupStatus);

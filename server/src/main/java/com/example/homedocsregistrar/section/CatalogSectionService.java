@@ -10,7 +10,10 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -99,6 +102,22 @@ public class CatalogSectionService {
     @Transactional(readOnly = true)
     public Optional<String> currentSectionPath(long documentId) {
         return documents.findById(documentId).map(Document::getSection).map(CatalogSection::path);
+    }
+
+    /**
+     * Owner (top-level section label) per document id — for the per-person emoji on result buttons.
+     * Documents without a section are simply absent from the map. One query, safe outside the caller's tx.
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, String> ownersOf(Collection<Long> documentIds) {
+        if (documentIds == null || documentIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> owners = new HashMap<>();
+        for (Object[] row : documents.findOwnerLabels(documentIds)) {
+            owners.put(((Number) row[0]).longValue(), (String) row[1]);
+        }
+        return owners;
     }
 
     /**

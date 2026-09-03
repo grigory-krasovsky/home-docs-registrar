@@ -12,6 +12,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -99,6 +100,26 @@ class CatalogSectionServiceTest {
         assertThat(service.recentDocuments(0, 1).hasNext()).isTrue();
         assertThat(service.recentDocuments(1, 1).items()).extracting(CatalogSectionService.DocDigest::title)
                 .containsExactly("Старый");
+    }
+
+    @Test
+    void ownersOfResolvesTopLevelLabelPerDocument() {
+        CatalogSection masha = sections.save(new CatalogSection(null, "Маша"));
+        CatalogSection lichnoe = sections.save(new CatalogSection("Личное", masha));
+
+        Document filed = new Document();
+        filed.setContentHash("own-1");
+        filed.setSection(lichnoe); // filed in a leaf -> owner is the parent «Маша»
+        documents.save(filed);
+
+        Document unfiled = new Document();
+        unfiled.setContentHash("own-2");
+        documents.save(unfiled); // no section -> absent from the map
+
+        var owners = service.ownersOf(List.of(filed.getId(), unfiled.getId()));
+
+        assertThat(owners).containsEntry(filed.getId(), "Маша");
+        assertThat(owners).doesNotContainKey(unfiled.getId());
     }
 
     @Test

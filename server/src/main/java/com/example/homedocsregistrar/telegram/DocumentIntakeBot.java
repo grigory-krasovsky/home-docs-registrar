@@ -1352,10 +1352,11 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             text.append("\nИскал также: ").append(String.join(", ", result.relatedTerms()));
         }
         text.append("\nНажмите кнопку, чтобы открыть файл:");
+        Map<Long, String> owners = sectionService.ownersOf(hits.stream().map(Document::getId).toList());
         var keyboard = InlineKeyboardMarkup.builder();
         for (Document hit : hits) {
             text.append("\n\n").append(resultLine(hit));
-            keyboard.keyboardRow(new InlineKeyboardRow(openFileButton(hit.getId(), buttonLabel(hit))));
+            keyboard.keyboardRow(new InlineKeyboardRow(fileButtonWithOwner(hit, owners)));
         }
         sender.send(chatId, text.toString(), keyboard.build());
     }
@@ -1430,10 +1431,11 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             return;
         }
         text.append("\n\nИсточники:");
+        Map<Long, String> owners = sectionService.ownersOf(result.sources().stream().map(Document::getId).toList());
         var keyboard = InlineKeyboardMarkup.builder();
         for (Document source : result.sources()) {
             text.append("\n\n").append(resultLine(source));
-            keyboard.keyboardRow(new InlineKeyboardRow(openFileButton(source.getId(), buttonLabel(source))));
+            keyboard.keyboardRow(new InlineKeyboardRow(fileButtonWithOwner(source, owners)));
         }
         sender.send(chatId, text.toString(), keyboard.build());
     }
@@ -1539,12 +1541,36 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         return InlineKeyboardButton.builder().text(label).callbackData("get:" + id).build();
     }
 
+    /** «Open file» button for a result, prefixed with the owner's emoji (whose document it is). */
+    private InlineKeyboardButton fileButtonWithOwner(Document document, Map<Long, String> owners) {
+        String emoji = ownerEmoji(owners.get(document.getId()));
+        String label = (emoji.isEmpty() ? "" : emoji + " ") + buttonLabel(document);
+        return openFileButton(document.getId(), label);
+    }
+
     /** Compact button label for a search hit: id + a short name. */
     private String buttonLabel(Document document) {
         String name = document.getTitle() != null && !document.getTitle().isBlank()
                 ? document.getTitle()
                 : (document.getDocType() != null && !document.getDocType().isBlank() ? document.getDocType() : "документ");
         return "📎 #" + document.getId() + " · " + truncate(name, 30);
+    }
+
+    /**
+     * A per-owner emoji for a document's catalog owner, so a result shows at a glance whose it is.
+     * Empty for «Общая»-less/unfiled documents or an unknown owner (then only the 📎 label shows).
+     */
+    private static String ownerEmoji(String ownerLabel) {
+        if (ownerLabel == null) {
+            return "";
+        }
+        return switch (ownerLabel) {
+            case "Маша" -> "🙍🏻‍♀️";
+            case "Гриша" -> "🙍🏼‍♂️";
+            case "Костя" -> "👦🏻";
+            case "Общая" -> "🏠";
+            default -> "";
+        };
     }
 
     private static String truncate(String value, int max) {
