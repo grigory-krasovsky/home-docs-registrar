@@ -53,6 +53,21 @@ public class DocumentSearchService {
     }
 
     /**
+     * OR-search over caller-supplied terms (no query expansion) — for a caller that already extracted the
+     * words to look for (e.g. Q&A stripping a question down to its nouns). Any document matching at least
+     * one term is returned, ranked by relevance. Empty result for no usable terms.
+     */
+    public SearchResult searchAny(List<String> terms) {
+        List<String> clean = terms == null ? List.of()
+                : terms.stream().filter(term -> term != null && !term.isBlank()).toList();
+        if (clean.isEmpty()) {
+            return new SearchResult(List.of(), List.of());
+        }
+        String query = buildOrQuery(clean.get(0), clean.subList(1, clean.size()));
+        return new SearchResult(documents.search(query, MAX_RESULTS), List.of());
+    }
+
+    /**
      * Build one {@code websearch_to_tsquery} string that ORs the original and related terms. Terms are NOT
      * quoted: a multi-word term becomes an AND of its words (matches when all words appear anywhere), not a
      * strict phrase — otherwise «свидетельство о браке» wouldn't match «свидетельство о заключении брака».

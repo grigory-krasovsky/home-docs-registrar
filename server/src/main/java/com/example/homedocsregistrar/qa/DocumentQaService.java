@@ -79,7 +79,16 @@ public class DocumentQaService {
         if (question == null || question.isBlank()) {
             return QaResult.notFound("Задайте вопрос по вашим документам.", List.of());
         }
-        DocumentSearchService.SearchResult search = searchService.search(question);
+        // Retrieve on the question's content words first — stripping interrogatives («сколько/стоит»)
+        // that no document contains and would otherwise AND away the real match. Fall back to the full
+        // ranked search (with its LLM query expansion) only when the keyword search finds nothing.
+        List<String> keywords = QuestionKeywords.keywords(question);
+        DocumentSearchService.SearchResult search = keywords.isEmpty()
+                ? new DocumentSearchService.SearchResult(List.of(), List.of())
+                : searchService.searchAny(keywords);
+        if (search.hits().isEmpty()) {
+            search = searchService.search(question);
+        }
         List<Document> hits = search.hits();
         List<String> relatedTerms = search.relatedTerms();
         if (hits.isEmpty()) {
