@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -18,7 +19,7 @@ class DocumentSearchServiceTest {
 
     private final DocumentRepository documents = mock(DocumentRepository.class);
     private final QueryExpansionService expansion = mock(QueryExpansionService.class);
-    private final DocumentSearchService search = new DocumentSearchService(documents, expansion);
+    private final DocumentSearchService search = new DocumentSearchService(documents, expansion, 0.3);
 
     @Test
     void literalHitReturnsWithoutExpanding() {
@@ -33,11 +34,27 @@ class DocumentSearchServiceTest {
     }
 
     @Test
-    void expandsOnlyWhenLiteralQueryFindsNothing() {
+    void orsOwnWordsWhenLiteralAndFindsNothing() {
+        Document licence = new Document();
+        // Literal AND of both words matches nothing (the licence has «водительск» but not «права»)...
+        when(documents.search(eq("водительские права"), anyInt())).thenReturn(List.of());
+        // ...but OR of the query's own words finds it — no LLM expansion needed.
+        when(documents.search(eq("водительские or права"), anyInt())).thenReturn(List.of(licence));
+
+        SearchResult result = search.search("водительские права");
+
+        assertThat(result.hits()).containsExactly(licence);
+        assertThat(result.relatedTerms()).isEmpty();
+        verifyNoInteractions(expansion);
+    }
+
+    @Test
+    void expandsWithRankFloorOnlyWhenOwnWordsFindNothing() {
         Document match = new Document();
-        when(documents.search(eq("свадьба"), anyInt())).thenReturn(List.of());          // literal: nothing
+        when(documents.search(eq("свадьба"), anyInt())).thenReturn(List.of());               // literal: nothing
         when(expansion.relatedTerms("свадьба")).thenReturn(List.of("брак"));
-        when(documents.search(eq("свадьба or брак"), anyInt())).thenReturn(List.of(match)); // expanded: hit
+        when(documents.searchWithRankFloor(eq("свадьба or брак"), anyDouble(), anyInt()))
+                .thenReturn(List.of(match));                                                   // expanded, tail dropped
 
         SearchResult result = search.search("свадьба");
 

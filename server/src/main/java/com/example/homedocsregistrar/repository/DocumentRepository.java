@@ -48,4 +48,23 @@ public interface DocumentRepository extends JpaRepository<Document, Long> {
             LIMIT :limit
             """, nativeQuery = true)
     List<Document> search(@Param("query") String query, @Param("limit") int limit);
+
+    /**
+     * Like {@link #search}, but drops the weak tail: only documents whose relevance is at least
+     * {@code floor} times the top hit's relevance are returned. Used for the query-expansion pass, where a
+     * single broad synonym would otherwise pull in unrelated documents that merely share a common word.
+     * Postgres-specific; verified against real Postgres (not exercised by the H2 tests).
+     */
+    @Query(value = """
+            SELECT d.* FROM document d
+            WHERE d.search_vector @@ websearch_to_tsquery('russian', :query)
+              AND ts_rank(d.search_vector, websearch_to_tsquery('russian', :query)) >= :floor * (
+                    SELECT MAX(ts_rank(dm.search_vector, websearch_to_tsquery('russian', :query)))
+                    FROM document dm
+                    WHERE dm.search_vector @@ websearch_to_tsquery('russian', :query))
+            ORDER BY ts_rank(d.search_vector, websearch_to_tsquery('russian', :query)) DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<Document> searchWithRankFloor(@Param("query") String query, @Param("floor") double floor,
+                                       @Param("limit") int limit);
 }

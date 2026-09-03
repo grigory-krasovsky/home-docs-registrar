@@ -45,6 +45,10 @@ search:
   # Expand a search query into related Russian terms via Claude before the FTS lookup, so e.g. «свадьба»
   # also matches «свидетельство о браке». Adds one cheap Haiku call per search; set false for plain FTS.
   expand-query: ${SEARCH_EXPAND_QUERY:true}
+  # When a search falls back to LLM query expansion, drop results whose relevance (ts_rank) is below this
+  # fraction of the top hit — so one broad synonym can't pull in unrelated documents that merely share a
+  # common word. 0 keeps everything (old behaviour); higher = stricter. Tune against real data.
+  expand-rank-floor: ${SEARCH_EXPAND_RANK_FLOOR:0.3}
 
 qa:
   # Answer free-text questions over the archive (/ask): retrieve the relevant documents via search, then
