@@ -175,6 +175,19 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 return;
             }
 
+            // A pending "/ask" waits for a TEXT question. If a non-text message arrives (photo/GIF/sticker/
+            // file), abandon the wait — otherwise it lingers and later hijacks an unrelated message into a
+            // token-costing Q&A. The message itself still falls through to its normal handling below (a file
+            // is ingested, a photo gets the "send as file" hint). Text is left for handleText, which consumes
+            // the pending ask itself.
+            if (!message.hasText()) {
+                Integer askPromptId = pendingAsk.remove(chatId);
+                if (askPromptId != null) {
+                    render(chatId, askPromptId, "Ожидание вопроса отменено (жду вопрос текстом). "
+                            + "Нажмите /ask, чтобы спросить снова.", null);
+                }
+            }
+
             if (message.hasDocument()) {
                 String mediaGroupId = message.getMediaGroupId();
                 if (mediaGroupId != null) {
