@@ -6,6 +6,7 @@ import com.example.homedocsregistrar.domain.AllowedUser;
 import com.example.homedocsregistrar.domain.CatalogSection;
 import com.example.homedocsregistrar.domain.Document;
 import com.example.homedocsregistrar.domain.DocumentPage;
+import com.example.homedocsregistrar.edit.DocumentDeletionService;
 import com.example.homedocsregistrar.edit.DocumentEditService;
 import com.example.homedocsregistrar.extraction.ApiUsageTracker;
 import com.example.homedocsregistrar.extraction.DocumentExtractionService;
@@ -33,6 +34,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -69,6 +71,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final CatalogSectionService sectionService;
     private final SectionSuggestionService suggestionService;
     private final DocumentEditService editService;
+    private final DocumentDeletionService deletionService;
     private final TelegramProperties telegram;
 
     // Lightweight per-chat dialog state. Benign if lost on restart: the suggested path can be re-picked
@@ -84,7 +87,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                              AccessService accessService, RegistrationThrottle registrationThrottle,
                              MediaGroupCollector mediaGroupCollector,
                              CatalogSectionService sectionService, SectionSuggestionService suggestionService,
-                             DocumentEditService editService, TelegramProperties telegram) {
+                             DocumentEditService editService, DocumentDeletionService deletionService,
+                             TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
@@ -99,6 +103,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.sectionService = sectionService;
         this.suggestionService = suggestionService;
         this.editService = editService;
+        this.deletionService = deletionService;
         this.telegram = telegram;
     }
 
@@ -211,6 +216,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         if (data != null && data.startsWith("title:")) {
             handleTitleCallback(callback);
+            return;
+        }
+        if (data != null && data.startsWith("del:")) {
+            handleDeleteCallback(callback);
             return;
         }
         handleCallback(callback);
@@ -457,6 +466,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             handleGet(chatId, trimmed);
         } else if (command.startsWith("/rename") || command.startsWith("/title")) {
             handleRenameCommand(chatId, trimmed);
+        } else if (command.startsWith("/delete")) {
+            handleDeleteCommand(chatId, trimmed);
         } else if (command.startsWith("/browse") || command.startsWith("/catalog")) {
             browseTop(chatId, null);
         } else if (command.startsWith("/manage_sections") || command.startsWith("/manage")) {
@@ -808,6 +819,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         var keyboard = InlineKeyboardMarkup.builder()
                 .keyboardRow(new InlineKeyboardRow(openFileButton(docId, "📎 Скачать файл")))
                 .keyboardRow(new InlineKeyboardRow(renameButton(docId)))
+                .keyboardRow(new InlineKeyboardRow(deleteButton(docId)))
                 .keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
                         .text("⬅ Назад").callbackData(back).build()));
         render(chatId, editMessageId, "📄 Документ #" + docId + "\nНазвание: " + shown, keyboard.build());
@@ -943,6 +955,115 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
 
     private InlineKeyboardButton renameButton(long docId) {
         return InlineKeyboardButton.builder().text("✏️ Название").callbackData("title:" + docId).build();
+    }
+
+    // ----- delete a document (🗑 in the card / /delete <id>); irreversible, so confirm first -----
+
+    /** /delete &lt;id&gt;: show the delete confirmation for a document. */
+    private void handleDeleteCommand(long chatId, String text) {
+        Long id = parseDocId(text);
+        if (id == null) {
+            sender.send(chatId, "Укажите номер документа, например: /delete 42");
+            return;
+        }
+        Optional<DocumentDeletionService.DeletionInfo> info = deletionService.info(id, Instant.now());
+        if (info.isEmpty()) {
+            sender.send(chatId, "Документ id=" + id + " не найден.");
+            return;
+        }
+        sender.send(chatId, deleteConfirmText(info.get()), deleteConfirmKeyboard(id));
+    }
+
+    /** Route a del:* callback: ask:&lt;id&gt; (confirm) | yes:&lt;id&gt; (delete) | no:&lt;id&gt; (cancel). */
+    private void handleDeleteCallback(CallbackQuery callback) {
+        String[] parts = callback.getData().split(":");
+        var message = callback.getMessage();
+        Long chatId = message == null ? null : message.getChatId();
+        Integer messageId = message == null ? null : message.getMessageId();
+        Long docId = parts.length > 2 ? parseLong(parts[2]) : null;
+        if (chatId == null || docId == null) {
+            sender.answerCallback(callback.getId(), null);
+            return;
+        }
+        switch (parts[1]) {
+            case "ask" -> {
+                sender.answerCallback(callback.getId(), null);
+                Optional<DocumentDeletionService.DeletionInfo> info = deletionService.info(docId, Instant.now());
+                if (info.isEmpty()) {
+                    render(chatId, messageId, "Документ #" + docId + " не найден.", null);
+                    return;
+                }
+                render(chatId, messageId, deleteConfirmText(info.get()), deleteConfirmKeyboard(docId));
+            }
+            case "yes" -> performDelete(chatId, messageId, callback, docId);
+            case "no" -> {
+                sender.answerCallback(callback.getId(), null);
+                render(chatId, messageId, "Удаление отменено.", catalogHomeKeyboard());
+            }
+            default -> sender.answerCallback(callback.getId(), null);
+        }
+    }
+
+    /** Delete the archived channel file(s) if still deletable (&lt;48h), then the registry row. */
+    private void performDelete(long chatId, Integer messageId, CallbackQuery callback, long docId) {
+        DocumentDeletionService.DeletionInfo info = deletionService.info(docId, Instant.now()).orElse(null);
+        if (info == null) {
+            sender.answerCallback(callback.getId(), "Документ не найден.");
+            render(chatId, messageId, "Документ #" + docId + " не найден.", null);
+            return;
+        }
+        String channel = telegram.archiveChannelId();
+        boolean channelCleaned = false;
+        if (info.withinDeleteWindow() && channel != null && !channel.isBlank()) {
+            for (Integer msgId : info.channelMessageIds()) {
+                sender.deleteMessage(channel, msgId);
+            }
+            channelCleaned = !info.channelMessageIds().isEmpty();
+        }
+        deletionService.delete(docId);
+        sender.answerCallback(callback.getId(), "Удалено");
+        String note;
+        if (info.channelMessageIds().isEmpty()) {
+            note = "";
+        } else if (channelCleaned) {
+            note = "\nФайл удалён и из архивного канала.";
+        } else {
+            note = "\nФайл в архивном канале оставлен (старше 48ч).";
+        }
+        render(chatId, messageId, "🗑 Документ #" + docId + " удалён." + note, catalogHomeKeyboard());
+    }
+
+    private String deleteConfirmText(DocumentDeletionService.DeletionInfo info) {
+        String title = info.title() == null || info.title().isBlank() ? "без названия" : info.title();
+        StringBuilder text = new StringBuilder("🗑 Удалить документ #" + info.id() + " «" + title + "»?\n")
+                .append("Запись будет удалена из картотеки");
+        if (info.channelMessageIds().isEmpty()) {
+            text.append('.');
+        } else if (info.withinDeleteWindow()) {
+            text.append(", файл — из архивного канала.");
+        } else {
+            text.append(" (файл в архивном канале останется — он старше 48ч).");
+        }
+        return text.append("\nДействие необратимо.").toString();
+    }
+
+    private InlineKeyboardMarkup deleteConfirmKeyboard(long docId) {
+        return InlineKeyboardMarkup.builder()
+                .keyboardRow(new InlineKeyboardRow(
+                        InlineKeyboardButton.builder().text("✅ Удалить").callbackData("del:yes:" + docId).build(),
+                        InlineKeyboardButton.builder().text("✖ Отмена").callbackData("del:no:" + docId).build()))
+                .build();
+    }
+
+    private InlineKeyboardButton deleteButton(long docId) {
+        return InlineKeyboardButton.builder().text("🗑 Удалить").callbackData("del:ask:" + docId).build();
+    }
+
+    private InlineKeyboardMarkup catalogHomeKeyboard() {
+        return InlineKeyboardMarkup.builder()
+                .keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
+                        .text("⬅ Картотека").callbackData("brw:home").build()))
+                .build();
     }
 
     /** /manage_sections — open the document browser at the first page (a fresh message). */
@@ -1098,6 +1219,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 + "• /browse — открыть секцию и посмотреть документы в ней\n"
                 + "• /manage_sections — разложить документы по секциям\n"
                 + "• /rename <id> — изменить название документа (или кнопкой ✏️)\n"
+                + "• /delete <id> — удалить документ (или 🗑 в карточке)\n"
                 + "• /tokens — сколько токенов израсходовано на распознавание";
     }
 

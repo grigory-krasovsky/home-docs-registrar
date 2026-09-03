@@ -80,9 +80,14 @@ public class TelegramSender {
      * (e.g. no delete rights in a group, or already deleted) is only logged.
      */
     public void deleteMessage(long chatId, int messageId) {
+        deleteMessage(String.valueOf(chatId), messageId);
+    }
+
+    /** Delete a message by string chat id — used for the archive channel ("-100…"). Best-effort. */
+    public void deleteMessage(String chatId, int messageId) {
         try {
             telegramClient.execute(DeleteMessage.builder()
-                    .chatId(String.valueOf(chatId))
+                    .chatId(chatId)
                     .messageId(messageId)
                     .build());
         } catch (TelegramApiException e) {
