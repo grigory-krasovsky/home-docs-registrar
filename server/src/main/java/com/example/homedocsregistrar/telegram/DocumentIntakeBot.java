@@ -58,6 +58,9 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     /** Page size for the /manage_sections document browser. */
     private static final int DOC_PAGE_SIZE = 8;
 
+    /** Soft cap on a /ask question length; longer input is treated as an accidental paste and refused. */
+    private static final int MAX_QUESTION_LEN = 1000;
+
     private final TelegramSender sender;
     private final TelegramFileService fileService;
     private final DocumentExtractionService extractionService;
@@ -1399,9 +1402,17 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
      * sources are shown as «открыть файл» buttons, like search hits.
      */
     private void handleAsk(long chatId, String question) {
-        if (question == null || question.isBlank()) {
+        String q = question == null ? "" : question.strip();
+        if (q.isBlank()) {
             sender.send(chatId, "Задайте вопрос по документам, например: "
                     + "/ask до какого числа гарантия на холодильник");
+            return;
+        }
+        // Soft length cap: a real question is short; a huge input is almost certainly an accidental paste,
+        // so refuse it instead of spending tokens retrieving + answering over it.
+        if (q.length() > MAX_QUESTION_LEN) {
+            sender.send(chatId, "Вопрос слишком длинный (" + q.length() + " символов, лимит " + MAX_QUESTION_LEN
+                    + "). Сформулируйте короче — я отвечаю по вашим документам, а не по присланному тексту.");
             return;
         }
         if (!qaService.isEnabled()) {
@@ -1409,7 +1420,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             return;
         }
         sender.sendChatAction(chatId, "typing"); // «печатает…» while retrieval + the answer call run
-        DocumentQaService.QaResult result = qaService.ask(question);
+        DocumentQaService.QaResult result = qaService.ask(q);
         StringBuilder text = new StringBuilder(result.answer());
         if (!result.found() && !result.relatedTerms().isEmpty()) {
             text.append("\n\nИскал также: ").append(String.join(", ", result.relatedTerms()));
