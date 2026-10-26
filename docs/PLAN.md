@@ -60,6 +60,49 @@ Telegram holds the primary copy, so the PC backup sync is not on the critical pa
 4. **Atomic write** — temp name → verify → rename within the backup folder.
 5. **Search + retrieval never wait on the PC** — metadata/text (Postgres) and file retrieval (`file_id`) are always available regardless of whether the PC is online.
 
+## Reminders via notifier
+
+Documents often carry deadlines (warranty end, next service, contract/insurance end, payment due). Reminders
+for them live in the sibling **notifier** bot (`../notifier`, its own Spring Boot app + Postgres), which
+pings the user at the chosen time and, with a repeat interval, keeps nagging until they press «Готово».
+The registrar talks to notifier's HTTP API v1 (full contract: `../notifier/docs/API.md`).
+
+- **Roles.** notifier is the **source of truth** for reminders — the registrar stores **no copy** (the user
+  can pause/finish/delete one right in notifier). Only short-lived dialog state lives in memory
+  (`telegram/ReminderDialog`), benign to lose on restart.
+- **Personal, tied to a document.** A reminder goes to the user who creates it (`telegramUserId` = the
+  private chat id); `source=home-docs`, `ref=document:<id>`, plus a deep link
+  `https://t.me/<bot>?start=doc_<id>` that notifier shows as «📄 Документ» — `/start doc_<id>` opens the
+  document card here (same allow-list check as every command). The bot's username comes from `getMe`.
+- **Idempotency.** The registrar generates `externalId` (UUID) when a suggestion or form *appears* and
+  keeps it in the pending state, so a repeated tap or a retry after a timeout gets `200` (existing event)
+  from notifier instead of a duplicate.
+- **LLM suggestions ride on the existing vision call** (no extra request; the model sees the document
+  itself). With `reminders.suggest` on (and notifier configured) the structured output is
+  `ExtractionWithReminders {document, reminders[]}`; otherwise the old `ExtractedFields` schema/prompt is
+  used unchanged. The model returns the **deadline itself** as an absolute ISO date (it's told today's
+  date; relative terms are counted from the document date). The registrar (`ReminderPlanner`) drops
+  malformed/past/>10-years/pre-document dates, de-dupes, keeps ≤ 3, and applies the **lead time** per kind
+  (warranty/service/insurance 14 days, contract end / expiry 30, payment 3, other 7; never before today) —
+  notifier only gets the final fire date. Suggestions default to a daily nag.
+- **UI (no extra messages).** Suggestions are a block + button rows (✅ Создать / ✏️ Изменить / ✖ Не надо)
+  on the existing «Сохранено ✅» card, edited in place; the section offer stays as is. «⏰ Напоминания»
+  (card button or `/remind <id>`) lists this user's reminders for the document (🗑 each, ➕ Новое); the
+  form is name → date → optional time (default: the user's working-hours start in notifier) → repeat
+  (none / hourly / daily) → create. A user not connected to notifier (`USER_NOT_REGISTERED`) sees «запусти
+  @<notifier> и нажми /start» instead of the create button.
+- **Failures.** Short timeouts (connect 2 s, read 5 s); unreachable/timeout/codeless 5xx →
+  `NotifierUnavailableException`, API errors → `NotifierApiException` by `code`. The user gets a clear
+  message and the pending suggestion/form survives for another tap.
+- **Document deletion** drops the document's reminders for all users (`DELETE /events?source&ref`),
+  best-effort and after the DB delete: if notifier is down the document is still deleted and the user is
+  warned.
+- **Off switch.** Blank `NOTIFIER_URL` → integration off: no reminder buttons/suggestions, the app boots as
+  usual. Config: `NOTIFIER_URL`, `NOTIFIER_API_TOKEN` (shared secret, env only), `NOTIFIER_BOT_USERNAME`,
+  `REMINDERS_SUGGEST`.
+- **Network.** On the VPS both stacks join the external docker network `home-apps` (the deploy creates it
+  idempotently); notifier is `http://notifier-app:8080` there. See `docs/SETUP.md` §8.
+
 ## Roadmap (status)
 
 - [x] **Step 1 — monorepo skeleton + durable docs.** Parent/aggregator + `server` (web+test) & `agent` (Jackson, shade); existing code in `server/`; agent stub; `docs/*`; `CLAUDE.md`. Green build, `contextLoads` passes.
@@ -67,6 +110,9 @@ Telegram holds the primary copy, so the PC backup sync is not on the critical pa
 - [x] **Step 3 — Telegram intake + extraction (server).** Long-polling bot: file → extract fields + full text → re-post to the archive channel → dedupe by content hash → save row; "sent as file, not a compressed photo" check; download-then-discard; config `ARCHIVE_CHANNEL_ID`. **Extraction switched from Tesseract to Claude vision** (`DocumentExtractionService`, Haiku 4.5); persistent token-usage counter + `/tokens` + remaining-balance estimate. **Deferred:** human-in-the-loop field confirmation and catalog-section picking.
 - [~] **Step 4 — retrieval + backup API (server).** **Done:** bot command `/get <id>` re-sends a document's file by its `file_id` (`DocumentRetrievalService`). **Deferred (postponed by user):** REST backup API for the agent (list `PENDING_BACKUP`, relay bytes from Telegram, mark `BACKED_UP`; bearer token).
 - [ ] **Step 5 — agent (Windows).** Backup sync loop: pull pending → write to local folder (temp → verify → rename) → mark backed up; idempotent + backoff; env config (`VPS_URL`, `AGENT_TOKEN`, `BACKUP_DIR`); fat JAR; Task Scheduler. Optional tray icon.
+- [x] **Reminders via notifier (server).** `reminder/` client (RestClient, typed errors) + `ReminderService`
+  + `ReminderPlanner`; `telegram/ReminderDialog` (card suggestions, list, form); `/remind`, `/start doc_<id>`;
+  reminders dropped on document deletion; `home-apps` network in compose + deploy. See "Reminders via notifier".
 - [ ] **Step 6 — SETUP.md + verification.** Fill in manual steps; build/tests + end-to-end check.
 
 ## Open decisions (resolve at implementation time)

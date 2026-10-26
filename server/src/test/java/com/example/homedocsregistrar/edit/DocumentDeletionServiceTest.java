@@ -3,6 +3,8 @@ package com.example.homedocsregistrar.edit;
 import com.example.homedocsregistrar.domain.Document;
 import com.example.homedocsregistrar.domain.DocumentPage;
 import com.example.homedocsregistrar.edit.DocumentDeletionService.DeletionInfo;
+import com.example.homedocsregistrar.edit.DocumentDeletionService.DeletionResult;
+import com.example.homedocsregistrar.reminder.ReminderService.ReminderCleanup.Outcome;
 import com.example.homedocsregistrar.repository.DocumentRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,14 +53,16 @@ class DocumentDeletionServiceTest {
     void deleteRemovesDocumentAndPages() {
         Document doc = saveWithPage(Instant.parse("2026-02-01T00:00:00Z"));
 
-        assertThat(service.delete(doc.getId())).isTrue();
+        DeletionResult result = service.delete(doc.getId());
+        assertThat(result.deleted()).isTrue();
+        assertThat(result.reminders().outcome()).isEqualTo(Outcome.SKIPPED); // notifier integration is off in tests
         assertThat(documents.findById(doc.getId())).isEmpty();
         assertThat(documents.findWithPagesById(doc.getId())).isEmpty();
     }
 
     @Test
     void deleteUnknownIsFalse() {
-        assertThat(service.delete(999_999L)).isFalse();
+        assertThat(service.delete(999_999L).deleted()).isFalse();
         assertThat(service.info(999_999L, Instant.parse("2026-02-01T00:00:00Z"))).isEmpty();
     }
 }

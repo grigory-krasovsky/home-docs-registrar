@@ -47,6 +47,19 @@ services:
       ANTHROPIC_PRICE_OUTPUT_PER_MTOK: ${ANTHROPIC_PRICE_OUTPUT_PER_MTOK:-5.00}
       # Semantic query expansion for search (Claude). Set false for plain FTS.
       SEARCH_EXPAND_QUERY: ${SEARCH_EXPAND_QUERY:-true}
+      # Reminders via the notifier bot's API (reached over the shared home-apps network). Blank URL ->
+      # reminders off. Set NOTIFIER_URL=http://notifier-app:8080 in .env to enable; the token must match
+      # notifier's NOTIFIER_API_TOKEN. See docs/SETUP.md.
+      NOTIFIER_URL: ${NOTIFIER_URL:-}
+      NOTIFIER_API_TOKEN: ${NOTIFIER_API_TOKEN:-}
+      NOTIFIER_BOT_USERNAME: ${NOTIFIER_BOT_USERNAME:-}
+      # LLM reminder suggestions at recognition (only with NOTIFIER_URL set). Set false to save tokens.
+      REMINDERS_SUGGEST: ${REMINDERS_SUGGEST:-true}
+    networks:
+      # Listing networks replaces the implicit default, so keep «default» explicitly — it's how the
+      # server reaches postgres. «home-apps» is shared with the notifier stack (container notifier-app).
+      - default
+      - home-apps
     ports:
       # Localhost only; this VPS is shared (8080 is taken by another service), so default to 8081.
       # Override with SERVER_HTTP_PORT in .env if needed. Put a TLS reverse proxy in front for the
@@ -55,3 +68,8 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  # Created outside compose (the deploy creates it if missing; so does notifier's), shared by both stacks.
+  home-apps:
+    external: true

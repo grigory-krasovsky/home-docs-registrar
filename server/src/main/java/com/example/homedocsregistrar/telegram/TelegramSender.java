@@ -4,16 +4,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
+import org.telegram.telegrambots.meta.api.methods.GetMe;
 import org.telegram.telegrambots.meta.api.methods.send.SendChatAction;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
+import org.telegram.telegrambots.meta.api.objects.User;
 import org.telegram.telegrambots.meta.api.objects.message.Message;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.meta.generics.TelegramClient;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Thin wrapper over {@link TelegramClient} for outbound messages. Grows with steps 3–4. */
 @Component
@@ -23,8 +27,33 @@ public class TelegramSender {
 
     private final TelegramClient telegramClient;
 
+    /** This bot's @username, fetched once via getMe (null until a call succeeds). */
+    private final AtomicReference<String> botUsername = new AtomicReference<>();
+
     public TelegramSender(TelegramClient telegramClient) {
         this.telegramClient = telegramClient;
+    }
+
+    /**
+     * This bot's username (without «@»), for deep links like {@code t.me/<bot>?start=…}. Fetched lazily via
+     * getMe and cached; returns null when the call fails (e.g. Telegram unreachable) and retries next time.
+     */
+    public String botUsername() {
+        String cached = botUsername.get();
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            User me = telegramClient.execute(GetMe.builder().build());
+            String username = me == null ? null : me.getUserName();
+            if (username != null && !username.isBlank()) {
+                botUsername.set(username);
+                return username;
+            }
+        } catch (TelegramApiException e) {
+            log.warn("Failed to fetch the bot username (getMe)", e);
+        }
+        return null;
     }
 
     /** Send a plain-text message; returns the sent message id, or null when sending failed. */

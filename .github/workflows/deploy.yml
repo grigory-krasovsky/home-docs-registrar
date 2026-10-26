@@ -70,4 +70,6 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             export SERVER_IMAGE=${{ env.IMAGE }}:${{ github.sha }}
             docker compose pull
+            # Shared with the notifier stack (external in docker-compose.yml); whoever deploys first creates it.
+            docker network inspect home-apps >/dev/null 2>&1 || docker network create home-apps
             docker compose up -d

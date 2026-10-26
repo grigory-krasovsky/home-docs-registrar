@@ -25,7 +25,14 @@ It is a **two-module monorepo** (see `docs/PLAN.md` for the full picture):
   model) and mirrors documents (relayed from Telegram via the VPS) into a local backup folder.
 
 Storage roles: **Telegram = primary**, VPS = registry/orchestrator, PC = owned backup (synced when
-online), removable SSD = manual cold copy. The pull model means the VPS needs **no inbound access to
+online), removable SSD = manual cold copy.
+
+**Reminders** live in the sibling **notifier** bot (`../notifier`), reached over its HTTP API v1 (contract:
+`../notifier/docs/API.md`; summary in `docs/PLAN.md` → "Reminders via notifier"). notifier is the source
+of truth — the registrar keeps no copy, only in-memory dialog state. Code: `server/.../reminder/`
+(`NotifierClient` on RestClient with typed `NotifierException`s, `ReminderService`, pure `ReminderPlanner`
+for lead time/date validation) and `telegram/ReminderDialog` (card suggestions, ⏰ list, create form —
+`DocumentIntakeBot` only routes `rem:*` callbacks and form input to it). Blank `NOTIFIER_URL` = off. The pull model means the VPS needs **no inbound access to
 the home network** (no VPN/port-forwarding). Implementation is in progress — most domain code is
 still to be written; follow the roadmap in `docs/PLAN.md`.
 
@@ -73,7 +80,9 @@ with a `pgdata` volume). The root `Dockerfile` is a multi-stage build of the `se
 `.github/workflows/deploy.yml` runs on push to `master`: build + test (JDK 21), build the image and
 push it to **GHCR** (`ghcr.io/<owner>/home-docs-server`), then SSH to the VPS and
 `docker compose pull && up -d`. Deploy steps are skipped until the `VPS_HOST` secret is set (the image
-is still built/pushed, so the workflow stays green). Secrets live in a `.env` on the VPS and in GitHub
+is still built/pushed, so the workflow stays green). The `server` service also joins the external docker
+network `home-apps` (shared with the notifier stack; the deploy creates it idempotently) — keep `default`
+listed too, or it loses postgres. Secrets live in a `.env` on the VPS and in GitHub
 secrets (`VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`) — never in git or the image (see `docs/SETUP.md`). The
 home `agent` is **not** part of this deploy — it stays a JAR on the Windows PC.
 
@@ -84,7 +93,9 @@ home `agent` is **not** part of this deploy — it stays a JAR on the Windows PC
 - The root `pom.xml` keeps empty `<license>`, `<developers>`, and `<scm>` overrides to block unwanted
   inheritance from the Spring Boot parent (see `HELP.md`) — leave these unless intentionally
   populating that metadata.
-- **Secrets never go in git** — Telegram token, DB password, and the agent API token are provided via
-  environment variables (see `docs/SETUP.md`).
+- **Secrets never go in git** — Telegram token, DB password, the agent API token and
+  `NOTIFIER_API_TOKEN` are provided via environment variables (see `docs/SETUP.md`).
+- Notifier calls must never block or break the main flow: short timeouts, best-effort cleanup, and the
+  `externalId` is generated when a suggestion/form appears (not on the tap) so retries stay idempotent.
 - Respect the sync invariants in `docs/PLAN.md` (mark-after-confirm, idempotency, persistence across
   restart, atomic writes) so the PC backup stays consistent.

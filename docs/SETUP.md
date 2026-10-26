@@ -30,6 +30,10 @@ values (paths, ids, tokens) as they are decided. Detailed instructions are writt
   TELEGRAM_BOT_TOKEN=
   ARCHIVE_CHANNEL_ID=
   AGENT_TOKEN=
+  # reminders via the notifier bot — see section 8 (blank NOTIFIER_URL = reminders off):
+  NOTIFIER_URL=
+  NOTIFIER_API_TOKEN=
+  NOTIFIER_BOT_USERNAME=
   ```
 - _TODO: create `.env`; confirm `docker compose up -d` brings up postgres + server._
 
@@ -59,3 +63,32 @@ values (paths, ids, tokens) as they are decided. Detailed instructions are writt
 
 - Periodically and manually copy the backup folder to the removable SSD (robocopy/File History/any tool).
 - _TODO: note the SSD drive letter / target path and the routine (e.g. weekly)._
+
+## 8. Reminders — the notifier bot (sibling project `../notifier`)
+
+Reminders for documents are created in the separate **notifier** bot through its HTTP API (see
+`docs/PLAN.md` → "Reminders via notifier"). Both apps run on the same VPS, each in its own compose
+stack, and talk over a shared external docker network.
+
+- **Network `home-apps`.** Created by the deploy if missing
+  (`docker network inspect home-apps >/dev/null 2>&1 || docker network create home-apps`); notifier's
+  deploy does the same, so whoever deploys first creates it. The `server` service joins both `default`
+  (for postgres) and `home-apps`; notifier's container is reachable there as `notifier-app`.
+- **`.env` on the VPS** (`~/home-docs-registrar/.env`, never commit):
+  ```
+  NOTIFIER_URL=http://notifier-app:8080
+  # MUST equal NOTIFIER_API_TOKEN in notifier's .env. Generate once: openssl rand -hex 32
+  NOTIFIER_API_TOKEN=<64 hex chars>
+  # notifier's @username (with or without @), for the «запусти @… и нажми /start» hint
+  NOTIFIER_BOT_USERNAME=
+  # optional: LLM reminder suggestions at recognition (default true); false saves a few tokens per document
+  REMINDERS_SUGGEST=true
+  ```
+  Leave `NOTIFIER_URL` blank to keep reminders off — the bot then shows no reminder buttons/suggestions.
+- **Each user** who wants reminders presses `/start` in the notifier bot once (the registrar shows a hint
+  until they do). Reminders are personal: they go to whoever creates them.
+- **Deep link back.** Reminders carry a «📄 Документ» link `https://t.me/<this bot>?start=doc_<id>`; the
+  bot's username is read via `getMe` at runtime — nothing to configure.
+- **Local run.** notifier listens on 8080 locally, so start the registrar on another port:
+  `SERVER_PORT=8081`, with `NOTIFIER_URL=http://localhost:8080` and the same `NOTIFIER_API_TOKEN` as
+  notifier.

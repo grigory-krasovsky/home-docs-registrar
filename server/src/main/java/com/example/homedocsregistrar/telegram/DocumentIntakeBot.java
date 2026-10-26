@@ -77,6 +77,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     private final SectionSuggestionService suggestionService;
     private final DocumentEditService editService;
     private final DocumentDeletionService deletionService;
+    private final ReminderDialog reminderDialog;
     private final TelegramProperties telegram;
 
     // Lightweight per-chat dialog state. Benign if lost on restart: the suggested path can be re-picked
@@ -102,7 +103,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                              MediaGroupCollector mediaGroupCollector,
                              CatalogSectionService sectionService, SectionSuggestionService suggestionService,
                              DocumentEditService editService, DocumentDeletionService deletionService,
-                             TelegramProperties telegram) {
+                             ReminderDialog reminderDialog, TelegramProperties telegram) {
         this.sender = sender;
         this.fileService = fileService;
         this.extractionService = extractionService;
@@ -119,6 +120,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         this.suggestionService = suggestionService;
         this.editService = editService;
         this.deletionService = deletionService;
+        this.reminderDialog = reminderDialog;
         this.telegram = telegram;
     }
 
@@ -254,6 +256,13 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             handleDeleteCallback(callback);
             return;
         }
+        if (data != null && data.startsWith("rem:")) {
+            // Reminders live in ReminderDialog; when its form now waits for text, drop our own text inputs.
+            if (reminderDialog.onCallback(callback)) {
+                clearTextInputs(callbackChatId);
+            }
+            return;
+        }
         handleCallback(callback);
     }
 
@@ -319,6 +328,13 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         return from == null ? null : from.getId();
     }
 
+    /** Drop this bot's own pending typed inputs (section name, field value, /ask question). */
+    private void clearTextInputs(long chatId) {
+        pendingSectionInput.remove(chatId);
+        pendingFieldInput.remove(chatId);
+        pendingAsk.remove(chatId);
+    }
+
     /**
      * The bot operates only in private (one-on-one) chats. In Telegram a private chat's id equals the
      * user's own id and is positive, whereas groups, supergroups and channels have negative ids.
@@ -360,7 +376,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 return;
             }
 
-            Extraction extraction = extractionService.extract(bytes).orElse(null);
+            Extraction extraction = extractionService.extract(List.of(bytes), reminderDialog.suggestionsAsOf())
+                    .orElse(null);
             ExtractedFields fields = extraction == null ? null : extraction.fields();
             if (!looksLikeDocument(fields)) {
                 sender.send(chatId, notADocumentMessage());
@@ -396,7 +413,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 return;
             }
 
-            Extraction extraction = extractionService.extract(images).orElse(null);
+            Extraction extraction = extractionService.extract(images, reminderDialog.suggestionsAsOf()).orElse(null);
             ExtractedFields fields = extraction == null ? null : extraction.fields();
             if (!looksLikeDocument(fields)) {
                 sender.send(chatId, notADocumentMessage());
@@ -430,7 +447,10 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 + "Пришлите фотографию документа: чек, договор, гарантию, свидетельство и т.п.";
     }
 
-    /** Common reply after an intake: dedupe notice, or the saved summary + token status + open button. */
+    /**
+     * Common reply after an intake: dedupe notice, or the saved summary + token status + open button. Reminder
+     * suggestions (if the model found deadlines) ride on this same card — see {@link ReminderDialog}.
+     */
     private void replySaved(long chatId, IntakeResult result, Extraction extraction) {
         Document document = result.document();
         if (result.duplicate()) {
@@ -445,17 +465,22 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         int pageCount = document.getPageCount();
         String buttonLabel = pageCount > 1 ? "📎 Открыть (" + pageCount + " стр.)" : "📎 Открыть файл";
-        var savedKeyboard = InlineKeyboardMarkup.builder()
-                .keyboardRow(new InlineKeyboardRow(
-                        openFileButton(document.getId(), buttonLabel), editFieldsButton(document.getId())))
-                .build();
-        sender.send(chatId, text, savedKeyboard);
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        rows.add(new InlineKeyboardRow(openFileButton(document.getId(), buttonLabel), editFieldsButton(document.getId())));
+        reminderDialog.listButton(document.getId()).ifPresent(button -> rows.add(new InlineKeyboardRow(button)));
+        reminderDialog.sendSavedCard(chatId, document, text, rows,
+                extraction == null ? List.of() : extraction.reminderHints());
         offerSection(chatId, document);
     }
 
     private void handleText(long chatId, int messageId, String text) {
         String trimmed = text.strip();
         String command = trimmed.toLowerCase(Locale.ROOT);
+
+        // A reminder form waiting for a name/date/time consumes the next plain message (and /cancel).
+        if (reminderDialog.onText(chatId, messageId, trimmed)) {
+            return;
+        }
 
         // A pending "type a new section name" input consumes the next plain message; a command cancels it.
         PendingSectionInput pending = pendingSectionInput.get(chatId);
@@ -508,7 +533,15 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
 
         if (command.startsWith("/start") || command.startsWith("/help")) {
-            sender.send(chatId, helpMessage());
+            // «/start doc_42» is the deep link a notifier reminder carries back to the document.
+            Long deepLinkDocId = command.startsWith("/start") ? deepLinkDocId(argument(trimmed)) : null;
+            if (deepLinkDocId != null) {
+                showDocumentCard(chatId, deepLinkDocId);
+            } else {
+                sender.send(chatId, helpMessage());
+            }
+        } else if (command.startsWith("/remind")) {
+            handleRemindCommand(chatId, trimmed);
         } else if (command.startsWith("/tokens") || command.startsWith("/usage")) {
             sender.send(chatId, tokensSummary());
         } else if (command.startsWith("/get") || command.startsWith("/doc")) {
@@ -695,6 +728,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             sender.answerCallback(callback.getId(), null);
             return;
         }
+        reminderDialog.cancelInput(chatId);
         pendingSectionInput.put(chatId, new PendingSectionInput(docId, topId, editMessageId));
         sender.answerCallback(callback.getId(), null);
         render(chatId, editMessageId, "Введите название новой подсекции в разделе «" + top.get().getLabel()
@@ -702,6 +736,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
     }
 
     private void awaitNewTopLevel(long chatId, Integer editMessageId, CallbackQuery callback, long docId) {
+        reminderDialog.cancelInput(chatId);
         pendingSectionInput.put(chatId, new PendingSectionInput(docId, null, editMessageId));
         sender.answerCallback(callback.getId(), null);
         render(chatId, editMessageId, "Введите название нового раздела (или /cancel):", cancelKeyboard(docId));
@@ -876,13 +911,51 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         String back = subId != null && subId > 0
                 ? "brw:sub:" + topId + ":" + subId + ":" + page
                 : "brw:none:" + page;
+        render(chatId, editMessageId, documentCard(document.get()), documentCardKeyboard(docId,
+                new InlineKeyboardRow(InlineKeyboardButton.builder().text("⬅ Назад").callbackData(back).build())));
+    }
+
+    /** /start doc_&lt;id&gt; (deep link from a notifier reminder): the document card as a fresh message. */
+    private void showDocumentCard(long chatId, long docId) {
+        Optional<Document> document = retrievalService.byId(docId);
+        if (document.isEmpty()) {
+            sender.send(chatId, "Документ #" + docId + " не найден — возможно, его удалили.");
+            return;
+        }
+        sender.send(chatId, documentCard(document.get()), documentCardKeyboard(docId,
+                new InlineKeyboardRow(InlineKeyboardButton.builder().text("📁 Картотека").callbackData("brw:home").build())));
+    }
+
+    /** The card's actions: download, edit, reminders (when enabled), delete, then the given navigation row. */
+    private InlineKeyboardMarkup documentCardKeyboard(long docId, InlineKeyboardRow navigationRow) {
         var keyboard = InlineKeyboardMarkup.builder()
                 .keyboardRow(new InlineKeyboardRow(openFileButton(docId, "📎 Скачать файл")))
-                .keyboardRow(new InlineKeyboardRow(editFieldsButton(docId)))
+                .keyboardRow(new InlineKeyboardRow(editFieldsButton(docId)));
+        reminderDialog.listButton(docId).ifPresent(button -> keyboard.keyboardRow(new InlineKeyboardRow(button)));
+        return keyboard
                 .keyboardRow(new InlineKeyboardRow(deleteButton(docId)))
-                .keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder()
-                        .text("⬅ Назад").callbackData(back).build()));
-        render(chatId, editMessageId, documentCard(document.get()), keyboard.build());
+                .keyboardRow(navigationRow)
+                .build();
+    }
+
+    /** The document id of a «doc_42» start parameter; null for a plain /start or anything else. */
+    private static Long deepLinkDocId(String startParameter) {
+        String value = startParameter.strip().toLowerCase(Locale.ROOT);
+        return value.startsWith("doc_") ? parseLong(value.substring("doc_".length())) : null;
+    }
+
+    /** /remind &lt;id&gt;: this user's reminders for a document (create / delete). */
+    private void handleRemindCommand(long chatId, String text) {
+        if (!reminderDialog.isEnabled()) {
+            sender.send(chatId, "Напоминания не настроены.");
+            return;
+        }
+        Long id = parseDocId(text);
+        if (id == null) {
+            sender.send(chatId, "Укажите номер документа, например: /remind 42");
+            return;
+        }
+        reminderDialog.openList(chatId, id);
     }
 
     /** The document «card» text: id + every field the model filled (empty fields omitted). */
@@ -1024,6 +1097,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             return;
         }
         pendingSectionInput.remove(chatId);
+        reminderDialog.cancelInput(chatId);
         String prompt = fieldPrompt(document.get(), field);
         InlineKeyboardMarkup keyboard = fieldEditKeyboard(field, docId);
         Integer promptId;
@@ -1201,7 +1275,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             }
             channelCleaned = !info.channelMessageIds().isEmpty();
         }
-        deletionService.delete(docId);
+        DocumentDeletionService.DeletionResult result = deletionService.delete(docId);
         sender.answerCallback(callback.getId(), "Удалено");
         String note;
         if (info.channelMessageIds().isEmpty()) {
@@ -1210,6 +1284,9 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
             note = "\nФайл удалён и из архивного канала.";
         } else {
             note = "\nФайл в архивном канале оставлен (старше 48ч).";
+        }
+        if (result.reminders().isFailed()) {
+            note += "\n⚠️ Напоминания по документу в notifier удалить не удалось — удалите их там (/manage).";
         }
         render(chatId, messageId, "🗑 Документ #" + docId + " удалён." + note, catalogHomeKeyboard());
     }
@@ -1374,6 +1451,7 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
         }
         pendingSectionInput.remove(chatId);
         pendingFieldInput.remove(chatId);
+        reminderDialog.cancelInput(chatId);
         Integer promptId = sender.send(chatId,
                 "🧠 Напишите вопрос по вашим документам следующим сообщением "
                         + "(например: «до какого числа гарантия на холодильник»).",
@@ -1481,6 +1559,8 @@ public class DocumentIntakeBot implements LongPollingSingleThreadUpdateConsumer 
                 + "• /manage_sections — разложить документы по секциям\n"
                 + "• ✏️ Изменить в карточке документа — поправить поля (тип, дата, сумма, гарантия…); /rename <id> — название\n"
                 + "• /delete <id> — удалить документ (или 🗑 в карточке)\n"
+                + (reminderDialog.isEnabled()
+                        ? "• /remind <id> — напоминания по документу (или ⏰ в карточке)\n" : "")
                 + "• /tokens — сколько токенов израсходовано на распознавание";
     }
 

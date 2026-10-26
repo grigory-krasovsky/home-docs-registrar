@@ -21,6 +21,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -45,6 +46,17 @@ public class DocumentExtractionService {
             Если на фото НЕ документ (человек, пейзаж, предмет, животное, случайный скриншот) — верни
             isDocument=false, НЕ описывай сцену и оставь fullText пустым (null). В fullText — только
             реальный текст, присутствующий на документе, а не твоё описание изображения.""";
+
+    /** Appended only when reminder suggestions are asked for (the schema then has a «reminders» list). */
+    private static final String REMINDERS_PROMPT = """
+
+            Поля документа верни в document. Дополнительно заполни reminders — будущие сроки из документа,
+            о которых стоит напомнить: окончание гарантии, следующее ТО или поверка, окончание договора
+            или страховки, срок оплаты, окончание срока действия документа. Сегодня %s. В date — дата
+            САМОГО срока, только абсолютная ГГГГ-ММ-ДД; если срок задан относительно («гарантия 12
+            месяцев», «оплатить в течение 10 дней»), отсчитай его от даты документа (docDate). Бери только
+            сроки, явно следующие из документа и ещё не прошедшие, не больше трёх. Если таких сроков нет
+            — пустой список.""";
 
     private final AnthropicClient client;
     private final String model;
@@ -81,6 +93,15 @@ public class DocumentExtractionService {
      * images are skipped; empty if disabled or none of the images are readable.
      */
     public Optional<Extraction> extract(List<byte[]> images) {
+        return extract(images, null);
+    }
+
+    /**
+     * Like {@link #extract(List)}, and when {@code remindersAsOf} is set also asks the same call for the
+     * document's upcoming deadlines (reminder suggestions), telling the model that this is today's date.
+     * Null keeps the original schema and prompt — no extra tokens.
+     */
+    public Optional<Extraction> extract(List<byte[]> images, LocalDate remindersAsOf) {
         if (client == null) {
             return Optional.empty();
         }
@@ -101,31 +122,46 @@ public class DocumentExtractionService {
         if (blocks.isEmpty()) {
             return Optional.empty();
         }
-        blocks.add(ContentBlockParam.ofText(TextBlockParam.builder().text(PROMPT).build()));
+        String prompt = remindersAsOf == null ? PROMPT : PROMPT + REMINDERS_PROMPT.formatted(remindersAsOf);
+        blocks.add(ContentBlockParam.ofText(TextBlockParam.builder().text(prompt).build()));
 
         // Scale the output budget with the page count so a long multi-page transcript isn't truncated.
         long maxTokens = Math.max(4096L, Math.min(16384L, 2048L * blocks.size()));
-        StructuredMessageCreateParams<ExtractedFields> params = MessageCreateParams.builder()
-                .model(model)
-                .maxTokens(maxTokens)
-                .outputConfig(ExtractedFields.class)
-                .addUserMessageOfBlockParams(blocks)
-                .build();
-
         try {
-            StructuredMessage<ExtractedFields> response = client.messages().create(params);
-            long inputTokens = response.usage().inputTokens();
-            long outputTokens = response.usage().outputTokens();
-            recordUsage(inputTokens, outputTokens);
-            return response.content().stream()
-                    .flatMap(block -> block.text().stream())
-                    .map(text -> text.text())
-                    .findFirst()
-                    .map(fields -> new Extraction(fields, inputTokens, outputTokens));
+            if (remindersAsOf == null) {
+                return request(ExtractedFields.class, blocks, maxTokens)
+                        .map(reply -> new Extraction(reply.value(), reply.inputTokens(), reply.outputTokens()));
+            }
+            return request(ExtractionWithReminders.class, blocks, maxTokens)
+                    .filter(reply -> reply.value().document() != null)
+                    .map(reply -> new Extraction(reply.value().document(), reply.value().reminders(),
+                            reply.inputTokens(), reply.outputTokens()));
         } catch (RuntimeException e) {
             log.error("Vision extraction failed", e);
             return Optional.empty();
         }
+    }
+
+    /** One structured vision call into {@code type}; usage is recorded even when the reply has no content. */
+    private <T> Optional<Reply<T>> request(Class<T> type, List<ContentBlockParam> blocks, long maxTokens) {
+        StructuredMessageCreateParams<T> params = MessageCreateParams.builder()
+                .model(model)
+                .maxTokens(maxTokens)
+                .outputConfig(type)
+                .addUserMessageOfBlockParams(blocks)
+                .build();
+        StructuredMessage<T> response = client.messages().create(params);
+        long inputTokens = response.usage().inputTokens();
+        long outputTokens = response.usage().outputTokens();
+        recordUsage(inputTokens, outputTokens);
+        return response.content().stream()
+                .flatMap(block -> block.text().stream())
+                .map(text -> text.text())
+                .findFirst()
+                .map(value -> new Reply<>(value, inputTokens, outputTokens));
+    }
+
+    private record Reply<T>(T value, long inputTokens, long outputTokens) {
     }
 
     /** Persist/log token usage; best-effort so a tracking failure never discards a good extraction. */
